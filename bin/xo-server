@@ -4,6 +4,11 @@
 
 // ===================================================================
 
+var log = require('why-is-node-running')
+process.on('exit', function () {
+  log()
+})
+
 // Better stack traces if possible.
 require('../better-stacks')
 
