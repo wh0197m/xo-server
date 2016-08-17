@@ -1,15 +1,11 @@
 import assign from 'lodash/assign'
 import Bluebird from 'bluebird'
-import every from 'lodash/every'
 import filter from 'lodash/filter'
-import isArray from 'lodash/isArray'
-import isPlainObject from 'lodash/isPlainObject'
 import map from 'lodash/map'
 import mapValues from 'lodash/mapValues'
-import size from 'lodash/size'
-import some from 'lodash/some'
 import { BaseError } from 'make-error'
 
+import match from './match'
 import { crossProduct } from './math'
 import {
   serializeError,
@@ -29,31 +25,6 @@ export class UnsupportedVectorType extends JobExecutorError {
 }
 
 // ===================================================================
-
-const match = (pattern, value) => {
-  if (isPlainObject(pattern)) {
-    if (size(pattern) === 1) {
-      if (pattern.__or) {
-        return some(pattern.__or, subpattern => match(subpattern, value))
-      }
-      if (pattern.__not) {
-        return !match(pattern.__not, value)
-      }
-    }
-
-    return isPlainObject(value) && every(pattern, (subpattern, key) => (
-      value[key] !== undefined && match(subpattern, value[key])
-    ))
-  }
-
-  if (isArray(pattern)) {
-    return isArray(value) && every(pattern, subpattern =>
-      some(value, subvalue => match(subpattern, subvalue))
-    )
-  }
-
-  return pattern === value
-}
 
 const paramsVectorActionsMap = {
   extractProperties ({ mapping, value }) {
