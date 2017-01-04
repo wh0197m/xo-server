@@ -3,7 +3,7 @@ import { forEach, map, startsWith } from 'lodash'
 import { join } from 'path'
 import { readdir } from 'fs-promise'
 
-const { warn } = createLogger('plugins')
+const { info, warn } = createLogger('plugins')
 
 // ===================================================================
 
@@ -39,6 +39,10 @@ const listPlugins = () => {
         let plugin
         try {
           plugin = require(path)
+          info(`successfully imported plugin ${name}`, {
+            name,
+            path
+          })
         } catch (error) {
           warn(`failed to import plugin ${name}`, {
             error,
