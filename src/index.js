@@ -80,7 +80,7 @@ global.Promise = Bluebird
 
   const app = new (require('./app').default)({ // eslint-disable-line new-cap
     config,
-    safeMode: require('lodash/include')(args, '--safe-mode'),
+    safeMode: require('lodash/includes')(args, '--safe-mode'),
     webServer
   })
   await app.start()
