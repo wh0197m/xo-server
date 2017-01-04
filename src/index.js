@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 
+const APP_NAME = 'xo-server'
+
+// -------------------------------------------------------------------
+
 const { info, warn } = require('log').default('bootstrap')
 
 process.on('unhandledRejection', reason => {
@@ -24,7 +28,7 @@ global.Promise = Bluebird
 ;(async args => {
   info('starting')
 
-  const config = await require('app-conf').load('xo-server')
+  const config = await require('app-conf').load(APP_NAME)
 
   const webServer = new (require('http-server-plus'))()
 
@@ -79,6 +83,7 @@ global.Promise = Bluebird
   global.Observable = require('zen-observable')
 
   const app = new (require('./app').default)({ // eslint-disable-line new-cap
+    appName: APP_NAME,
     config,
     safeMode: require('lodash/includes')(args, '--safe-mode'),
     webServer
