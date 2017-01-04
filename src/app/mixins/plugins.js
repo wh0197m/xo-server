@@ -25,7 +25,7 @@ const listPlugins = () => {
 
         const previous = plugins[name]
         if (name in plugins) {
-          warning(`duplicate plugins ${name}`, {
+          warn(`duplicate plugins ${name}`, {
             name,
             paths: [
               previous.path,
@@ -40,7 +40,7 @@ const listPlugins = () => {
         try {
           plugin = require(path)
         } catch (error) {
-          warning(`failed to import plugin ${name}`, {
+          warn(`failed to import plugin ${name}`, {
             error,
             name,
             path
@@ -70,7 +70,7 @@ const listPlugins = () => {
     }),
     error => {
       if (error.code !== 'ENOENT') {
-        warning('plugins', 'failed to read directory', {
+        warn('plugins', 'failed to read directory', {
           error,
           path
         })
