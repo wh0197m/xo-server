@@ -1,5 +1,5 @@
 import createLogger from 'log'
-import generateToken from 'generateToken'
+import generateToken from 'generate-token'
 import { fromCallback } from 'promise-toolbox'
 import { once } from 'lodash'
 
