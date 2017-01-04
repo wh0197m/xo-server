@@ -1,10 +1,15 @@
+import createLogger from 'log'
 import emitAsync from 'emit-async'
 import { noop } from 'lodash'
+
+const { warn } = createLogger('hooks')
 
 const makeSingletonEvent = (triggerEvent, postEvent) => function () {
   this[triggerEvent] = noop
 
-  return emitAsync.call(this, triggerEvent).then(() => {
+  return emitAsync.call(this, {
+    onError: error => warn(`${triggerEvent} hook failed`, error)
+  }, triggerEvent).then(() => {
     this.removeAllListeners(triggerEvent)
     this.emit(postEvent)
     this.removeAllListeners(postEvent)
