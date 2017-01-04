@@ -38,11 +38,11 @@ export default class Plugins {
     const prefix = this._prefix
     const prefixLength = prefix.length
 
-    return Promise.all(map(LOOKUP_PATHS, path => readdir(path).then(
+    return Promise.all(map(LOOKUP_PATHS, lookupPath => readdir(lookupPath).then(
       basenames => forEach(basenames, basename => {
         if (startsWith(basename, prefix)) {
           const name = basename.slice(prefixLength)
-          const path = join(path, basename)
+          const path = join(lookupPath, basename)
 
           const previous = plugins[name]
           if (name in plugins) {
@@ -97,7 +97,7 @@ export default class Plugins {
         if (error.code !== 'ENOENT') {
           warn('plugins', 'failed to read directory', {
             error,
-            path
+            lookupPath
           })
         }
       }
