@@ -386,6 +386,8 @@ const TRANSFORMS = {
       tags: obj.tags,
       usage: +obj.virtual_allocation,
       VDIs: link(obj, 'VDIs'),
+      other_config:obj.other_config,
+      sm_config:obj.sm_config,
 
       $container: (
         obj.shared || !obj.$PBDs[0]
@@ -404,7 +406,8 @@ const TRANSFORMS = {
 
       attached: Boolean(obj.currently_attached),
       host: link(obj, 'host'),
-      SR: link(obj, 'SR')
+      SR: link(obj, 'SR'),
+      device_config: obj.device_config
     }
   },
 
