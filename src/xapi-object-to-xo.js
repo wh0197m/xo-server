@@ -386,8 +386,8 @@ const TRANSFORMS = {
       tags: obj.tags,
       usage: +obj.virtual_allocation,
       VDIs: link(obj, 'VDIs'),
-      other_config:obj.other_config,
-      sm_config:obj.sm_config,
+      other_config: obj.other_config,
+      sm_config: obj.sm_config,
 
       $container: (
         obj.shared || !obj.$PBDs[0]
