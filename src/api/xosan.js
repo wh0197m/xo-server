@@ -208,6 +208,9 @@ export async function createVM ({ srs }) {
       ' redundancy 1 ' + ipAddresses.map(ip => (ip + ':/bricks/xosan/xosandir')).join(' ')
     console.log('creating volume', volumeCreation)
     console.log(await runSsh(firstAddress, [ volumeCreation ]))
+    console.log(await runSsh(firstAddress, [ 'gluster volume set xosan group virt' ]))
+    console.log(await runSsh(firstAddress, [ 'gluster volume set xosan features.shard on' ]))
+    console.log(await runSsh(firstAddress, [ 'gluster volume set xosan features.shard-block-size 16MB' ]))
     console.log(await runSsh(firstAddress, [ 'gluster volume start xosan' ]))
     console.log('xosan gluster volume started')
     const config = { server: firstAddress + ':/xosan' }
