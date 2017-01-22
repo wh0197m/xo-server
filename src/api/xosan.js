@@ -1,10 +1,14 @@
 import fromPairs from 'lodash/fromPairs'
+import find from 'lodash/find'
+import filter from 'lodash/filter'
+import map from 'lodash/map'
 import arp from 'arp-a'
 import { spawn } from 'child_process'
+import { createReadStream } from 'fs'
 
-async function runSsh (ip, command) {
+async function runCmd (command, argArray) {
   return new Promise((resolve, reject) => {
-    const child = spawn('ssh', [ '-o', 'StrictHostKeyChecking=no', 'root@' + ip, command ])
+    const child = spawn(command, argArray)
     let resp = ''
     let stderr = ''
     child.stdout.on('data', function (buffer) {
@@ -21,6 +25,10 @@ async function runSsh (ip, command) {
       }
     })
   })
+}
+
+async function runSsh (ip, command) {
+  return await runCmd('ssh', [ '-o', 'StrictHostKeyChecking=no', 'root@' + ip, command ])
 }
 
 export async function getPeers ({ ip }) {
@@ -69,6 +77,11 @@ getPeers.params = {
 }
 
 export async function getVolumeInfo ({ ip, volumeName }) {
+  let giantIPtoVMDict = fromPairs([].concat.apply([], map(this.getAllXapis(), xapi => {
+    let collected = filter(xapi.objects.all, { $type: 'vm' })
+      .map(vm => (vm.$guest_metrics ? Object.values(vm.$guest_metrics.networks).map(ip => ([ ip, vm.$id ])) : []))
+    return [].concat.apply([], collected)
+  })))
   // ssh -o StrictHostKeyChecking=no  root@192.168.0.201 gluster volume info xosan
   const result = await runSsh(ip, 'gluster volume info ' + volumeName)
   /*
@@ -109,7 +122,10 @@ export async function getVolumeInfo ({ ip, volumeName }) {
   let getNumber = item => parseInt(item.substr(5))
   let brickKeys = Object.keys(info).filter(key => key.match(/^Brick[1-9]/)).sort((i1, i2) => getNumber(i1) - getNumber(i2))
   // expected brickKeys : [ 'Brick1', 'Brick2', 'Brick3' ]
-  info[ 'Bricks' ] = brickKeys.map(key => ({ config: info[ key ] }))
+  info[ 'Bricks' ] = brickKeys.map(key => {
+    const ip = info[ key ].split(':')[ 0 ]
+    return { config: info[ key ], ip: ip, vm: giantIPtoVMDict[ ip ] }
+  })
   await new Promise((resolve, reject) => arp.table((err, entry) => {
     if (entry) {
       const brick = info[ 'Bricks' ].find(element => element.config.split(':')[ 0 ] === entry.ip)
@@ -121,6 +137,7 @@ export async function getVolumeInfo ({ ip, volumeName }) {
       resolve()
     }
   }))
+  info.peers = await getPeers({ ip: ip })
   return info
 }
 
@@ -134,4 +151,83 @@ getVolumeInfo.params = {
   volumeName: {
     type: 'string'
   }
+}
+
+function trucate2048 (value) {
+  return 2048 * Math.floor(value / 2048)
+}
+
+async function prepareGlusterVm (xapi, sr, size) {
+  console.log('sr', sr)
+  let stream = createReadStream('../XOSANTEMPLATE.xva')
+  let xosanNetwork = find(xapi.objects.all, obj => (obj.$type === 'network' && xapi.xo.getData(obj, 'xosan')))
+  let host = xapi.getObject(xapi.getObject(sr.$PBDs[ 0 ]).host)
+  let vm = await xapi.importVm(stream, { srId: sr.$ref, type: 'xva' })
+  let firstVif = vm.$VIFs[ 0 ]
+  if (xosanNetwork.$id !== firstVif.$network.$id) {
+    console.log('VIF in wrong network (' + firstVif.$network.name_label + '), moving to correct one: ' + xosanNetwork.name_label)
+    await xapi.call('VIF.move', firstVif.$ref, xosanNetwork.$ref)
+  }
+  await xapi.editVm(vm, {
+    name_label: 'XOSAN - ' + sr.name_label + ' - ' + host.name_label,
+    name_description: 'Xosan VM storing data on volume ' + sr.name_label
+  })
+  const dataDisk = vm.$VBDs.map(vbd => vbd.$VDI).find(vdi => vdi.name_label === 'xosan_data')
+  await xapi._resizeVdi(dataDisk, size)
+  await xapi.startVm(vm)
+  vm = await xapi._waitObjectState(vm.$id, vm => Boolean(vm.$guest_metrics) && Boolean(Object.values(vm.$guest_metrics.networks).length))
+  const networks = vm.$guest_metrics.networks
+  /* expected:
+   { '0/ip': '192.168.0.56',
+   '0/ipv6/0': 'fe80::bcb0:6366:3670:ae42',
+   '0/ipv6/1': 'fe80::14ed:30ab:44b9:6c0c',
+   '0/ipv6/2': 'fe80::96c6:d82f:db1a:486e' }
+   */
+  // trying to match on IPv4 addresses. Is IPv6 discrimination bad?
+  const key = Object.keys(networks).find(key => key.match(/0\/ip($|\/)/))
+  const address = networks[ key ]
+  await runCmd('sshpass', [ '-p', 'qwerty', 'ssh-copy-id', '-o', 'StrictHostKeyChecking=no', 'root@' + address ])
+  await runSsh(address, [ 'passwd -l root' ])
+  return address
+}
+
+export async function createVM ({ srs }) {
+  try {
+    console.log('srs', srs)
+    let xapi = find(this.getAllXapis(), xapi => (xapi.getObject(srs[ 0 ])))
+    const srsObjects = map(srs, srId => xapi.getObject(srId))
+    const minSize = Math.min(...map(srsObjects, sr => (sr.physical_size - sr.physical_utilisation) * 0.8))
+    const truncatedSize = trucate2048(minSize)
+    const ipAddresses = await Promise.all(map(srsObjects, sr => prepareGlusterVm(xapi, sr, truncatedSize)))
+    console.log('ipAddresses returned', ipAddresses)
+    const firstAddress = ipAddresses[ 0 ]
+    for (let i = 1; i < ipAddresses.length; i++) {
+      console.log(await runSsh(firstAddress, [ 'gluster peer probe ' + ipAddresses[ i ] ]))
+    }
+    const volumeCreation = 'gluster volume create xosan disperse ' + ipAddresses.length +
+      ' redundancy 1 ' + ipAddresses.map(ip => (ip + ':/bricks/xosan/xosandir')).join(' ')
+    console.log('creating volume', volumeCreation)
+    console.log(await runSsh(firstAddress, [ volumeCreation ]))
+    console.log(await runSsh(firstAddress, [ 'gluster volume start xosan' ]))
+    console.log('xosan gluster volume started')
+    const config = { server: firstAddress + ':/xosan' }
+    await xapi.call('SR.create', srsObjects[ 0 ].$PBDs[ 0 ].$host.$ref, config, 0, 'XOSAN', 'XOSAN', 'xosan', '', true, {})
+  } catch (err) {
+    console.log(err)
+  }
+}
+
+createVM.description = 'create gluster VM'
+createVM.permission = 'admin'
+createVM.params = {
+  srs: {
+    type: 'array',
+    items: {
+      type: 'string'
+    }
+  }
+}
+
+createVM.resolve = {
+  srs: [ 'sr', 'SR', 'administrate' ]
 }
