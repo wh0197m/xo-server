@@ -157,12 +157,16 @@ function trucate2048 (value) {
   return 2048 * Math.floor(value / 2048)
 }
 
-async function prepareGlusterVm (xapi, sr, size) {
-  console.log('sr', sr)
+async function importVM (xapi, sr) {
   let stream = createReadStream('../XOSANTEMPLATE.xva')
+  return await xapi.importVm(stream, { srId: sr.$ref, type: 'xva' })
+}
+
+async function prepareGlusterVm (xapi, vm, sr, size) {
+  console.log('sr', sr)
   let xosanNetwork = find(xapi.objects.all, obj => (obj.$type === 'network' && xapi.xo.getData(obj, 'xosan')))
+  await xapi._waitObjectState(sr.$id, sr => Boolean(sr.$PBDs))
   let host = xapi.getObject(xapi.getObject(sr.$PBDs[ 0 ]).host)
-  let vm = await xapi.importVm(stream, { srId: sr.$ref, type: 'xva' })
   let firstVif = vm.$VIFs[ 0 ]
   if (xosanNetwork.$id !== firstVif.$network.$id) {
     console.log('VIF in wrong network (' + firstVif.$network.name_label + '), moving to correct one: ' + xosanNetwork.name_label)
@@ -172,7 +176,7 @@ async function prepareGlusterVm (xapi, sr, size) {
     name_label: 'XOSAN - ' + sr.name_label + ' - ' + host.name_label,
     name_description: 'Xosan VM storing data on volume ' + sr.name_label
   })
-  const dataDisk = vm.$VBDs.map(vbd => vbd.$VDI).find(vdi => vdi.name_label === 'xosan_data')
+  const dataDisk = vm.$VBDs.map(vbd => vbd.$VDI).find(vdi => vdi && vdi.name_label === 'xosan_data')
   await xapi._resizeVdi(dataDisk, size)
   await xapi.startVm(vm)
   vm = await xapi._waitObjectState(vm.$id, vm => Boolean(vm.$guest_metrics) && Boolean(Object.values(vm.$guest_metrics.networks).length))
@@ -192,18 +196,23 @@ async function prepareGlusterVm (xapi, sr, size) {
 }
 
 export async function createVM ({ srs }) {
-  try {
-    console.log('srs', srs)
+  if (srs.length > 0) {
     let xapi = find(this.getAllXapis(), xapi => (xapi.getObject(srs[ 0 ])))
     const srsObjects = map(srs, srId => xapi.getObject(srId))
     const minSize = Math.min(...map(srsObjects, sr => (sr.physical_size - sr.physical_utilisation) * 0.8))
     const truncatedSize = trucate2048(minSize)
-    const ipAddresses = await Promise.all(map(srsObjects, sr => prepareGlusterVm(xapi, sr, truncatedSize)))
+    const firstVM = await importVM(xapi, srsObjects[ 0 ])
+    const vmsAndSrs = [ { vm: firstVM, sr: srsObjects[ 0 ] } ]
+    for (let i = 1; i < srsObjects.length; i++) {
+      vmsAndSrs.push({ vm: await xapi.copyVm(firstVM, srsObjects[ i ]), sr: srsObjects[ i ] })
+    }
+    const ipAddresses = await Promise.all(map(vmsAndSrs, vmAndSr => prepareGlusterVm(xapi, vmAndSr.vm, vmAndSr.sr, truncatedSize)))
     console.log('ipAddresses returned', ipAddresses)
     const firstAddress = ipAddresses[ 0 ]
     for (let i = 1; i < ipAddresses.length; i++) {
       console.log(await runSsh(firstAddress, [ 'gluster peer probe ' + ipAddresses[ i ] ]))
     }
+
     const volumeCreation = 'gluster volume create xosan disperse ' + ipAddresses.length +
       ' redundancy 1 ' + ipAddresses.map(ip => (ip + ':/bricks/xosan/xosandir')).join(' ')
     console.log('creating volume', volumeCreation)
@@ -211,12 +220,11 @@ export async function createVM ({ srs }) {
     console.log(await runSsh(firstAddress, [ 'gluster volume set xosan group virt' ]))
     console.log(await runSsh(firstAddress, [ 'gluster volume set xosan features.shard on' ]))
     console.log(await runSsh(firstAddress, [ 'gluster volume set xosan features.shard-block-size 16MB' ]))
+    console.log(await runSsh(firstAddress, [ 'gluster volume set xosan performance.stat-prefetch on' ]))
     console.log(await runSsh(firstAddress, [ 'gluster volume start xosan' ]))
     console.log('xosan gluster volume started')
     const config = { server: firstAddress + ':/xosan' }
     await xapi.call('SR.create', srsObjects[ 0 ].$PBDs[ 0 ].$host.$ref, config, 0, 'XOSAN', 'XOSAN', 'xosan', '', true, {})
-  } catch (err) {
-    console.log(err)
   }
 }
 
