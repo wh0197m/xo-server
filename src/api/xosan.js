@@ -162,8 +162,9 @@ async function importVM (xapi, sr) {
   return await xapi.importVm(stream, { srId: sr.$ref, type: 'xva' })
 }
 
-async function prepareGlusterVm (xapi, vm, sr, size) {
-  console.log('sr', sr)
+async function prepareGlusterVm (xapi, vm, sr) {
+  //refresh the object so that sizes are correct
+  sr = xapi.getObject(sr.$id)
   let xosanNetwork = find(xapi.objects.all, obj => (obj.$type === 'network' && xapi.xo.getData(obj, 'xosan')))
   await xapi._waitObjectState(sr.$id, sr => Boolean(sr.$PBDs))
   let host = xapi.getObject(xapi.getObject(sr.$PBDs[ 0 ]).host)
@@ -177,7 +178,10 @@ async function prepareGlusterVm (xapi, vm, sr, size) {
     name_description: 'Xosan VM storing data on volume ' + sr.name_label
   })
   const dataDisk = vm.$VBDs.map(vbd => vbd.$VDI).find(vdi => vdi && vdi.name_label === 'xosan_data')
-  await xapi._resizeVdi(dataDisk, size)
+  const srFreeSpace = sr.physical_size - sr.physical_utilisation
+  //we use a percentage because it looks like the VDI overhead is proportional
+  const newSize = trucate2048((srFreeSpace + dataDisk.virtual_size) * 0.98)
+  await xapi._resizeVdi(dataDisk, newSize)
   await xapi.startVm(vm)
   vm = await xapi._waitObjectState(vm.$id, vm => Boolean(vm.$guest_metrics) && Boolean(Object.values(vm.$guest_metrics.networks).length))
   const networks = vm.$guest_metrics.networks
@@ -199,14 +203,12 @@ export async function createVM ({ srs }) {
   if (srs.length > 0) {
     let xapi = find(this.getAllXapis(), xapi => (xapi.getObject(srs[ 0 ])))
     const srsObjects = map(srs, srId => xapi.getObject(srId))
-    const minSize = Math.min(...map(srsObjects, sr => (sr.physical_size - sr.physical_utilisation) * 0.8))
-    const truncatedSize = trucate2048(minSize)
     const firstVM = await importVM(xapi, srsObjects[ 0 ])
     const vmsAndSrs = [ { vm: firstVM, sr: srsObjects[ 0 ] } ]
     for (let i = 1; i < srsObjects.length; i++) {
       vmsAndSrs.push({ vm: await xapi.copyVm(firstVM, srsObjects[ i ]), sr: srsObjects[ i ] })
     }
-    const ipAddresses = await Promise.all(map(vmsAndSrs, vmAndSr => prepareGlusterVm(xapi, vmAndSr.vm, vmAndSr.sr, truncatedSize)))
+    const ipAddresses = await Promise.all(map(vmsAndSrs, vmAndSr => prepareGlusterVm(xapi, vmAndSr.vm, vmAndSr.sr)))
     console.log('ipAddresses returned', ipAddresses)
     const firstAddress = ipAddresses[ 0 ]
     for (let i = 1; i < ipAddresses.length; i++) {
