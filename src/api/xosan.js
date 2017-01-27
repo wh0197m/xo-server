@@ -194,9 +194,19 @@ async function prepareGlusterVm (xapi, vm, sr) {
   // trying to match on IPv4 addresses. Is IPv6 discrimination bad?
   const key = Object.keys(networks).find(key => key.match(/0\/ip($|\/)/))
   const address = networks[ key ]
-  await runCmd('sshpass', [ '-p', 'qwerty', 'ssh-copy-id', '-o', 'StrictHostKeyChecking=no', 'root@' + address ])
-  await runSsh(address, [ 'passwd -l root' ])
-  return address
+  const result = await xapi.call('host.call_plugin', host.$ref, 'xosan.py', 'prepare_new_vm', {
+    destination: 'root@' + address,
+    password: 'qwerty'
+  })
+  console.log(JSON.parse(result))
+  return { address, host }
+}
+
+async function remoteSsh (xapi, hostAndIp, cmd) {
+  return JSON.parse(await xapi.call('host.call_plugin', hostAndIp.host.$ref, 'xosan.py', 'run_ssh', {
+    destination: 'root@' + hostAndIp.address,
+    cmd: cmd
+  }))
 }
 
 export async function createVM ({ srs }) {
@@ -208,24 +218,23 @@ export async function createVM ({ srs }) {
     for (let i = 1; i < srsObjects.length; i++) {
       vmsAndSrs.push({ vm: await xapi.copyVm(firstVM, srsObjects[ i ]), sr: srsObjects[ i ] })
     }
-    const ipAddresses = await Promise.all(map(vmsAndSrs, vmAndSr => prepareGlusterVm(xapi, vmAndSr.vm, vmAndSr.sr)))
-    console.log('ipAddresses returned', ipAddresses)
-    const firstAddress = ipAddresses[ 0 ]
-    for (let i = 1; i < ipAddresses.length; i++) {
-      console.log(await runSsh(firstAddress, [ 'gluster peer probe ' + ipAddresses[ i ] ]))
+    const ipAndHosts = await Promise.all(map(vmsAndSrs, vmAndSr => prepareGlusterVm(xapi, vmAndSr.vm, vmAndSr.sr)))
+    console.log('ipAddresses returned', ipAndHosts.map(ipAndHost=> ipAndHosts.address))
+    const firstIpAndHost = ipAndHosts[ 0 ]
+    for (let i = 1; i < ipAndHosts.length; i++) {
+      console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster peer probe ' + ipAndHosts[ i ].address))
     }
-
-    const volumeCreation = 'gluster volume create xosan disperse ' + ipAddresses.length +
-      ' redundancy 1 ' + ipAddresses.map(ip => (ip + ':/bricks/xosan/xosandir')).join(' ')
-    console.log('creating volume', volumeCreation)
-    console.log(await runSsh(firstAddress, [ volumeCreation ]))
-    console.log(await runSsh(firstAddress, [ 'gluster volume set xosan group virt' ]))
-    console.log(await runSsh(firstAddress, [ 'gluster volume set xosan features.shard on' ]))
-    console.log(await runSsh(firstAddress, [ 'gluster volume set xosan features.shard-block-size 16MB' ]))
-    console.log(await runSsh(firstAddress, [ 'gluster volume set xosan performance.stat-prefetch on' ]))
-    console.log(await runSsh(firstAddress, [ 'gluster volume start xosan' ]))
+    const volumeCreation = 'gluster volume create xosan disperse ' + ipAndHosts.length +
+      ' redundancy 1 ' + ipAndHosts.map(ipAndHosts => (ipAndHosts.address + ':/bricks/xosan/xosandir')).join(' ')
+    console.log('creating volume: ', volumeCreation)
+    console.log(await remoteSsh(xapi, firstIpAndHost, volumeCreation))
+    console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan group virt'))
+    console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan features.shard on'))
+    console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan features.shard-block-size 16MB'))
+    console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.stat-prefetch on'))
+    console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume start xosan'))
     console.log('xosan gluster volume started')
-    const config = { server: firstAddress + ':/xosan' }
+    const config = { server: firstIpAndHost.address + ':/xosan' }
     await xapi.call('SR.create', srsObjects[ 0 ].$PBDs[ 0 ].$host.$ref, config, 0, 'XOSAN', 'XOSAN', 'xosan', '', true, {})
   }
 }
