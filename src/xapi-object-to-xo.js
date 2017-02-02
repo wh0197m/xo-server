@@ -514,6 +514,7 @@ const TRANSFORMS = {
       MTU: +obj.MTU,
       name_description: obj.name_description,
       name_label: obj.name_label,
+      other_config:obj.other_config,
       tags: obj.tags,
       PIFs: link(obj, 'PIFs'),
       VIFs: link(obj, 'VIFs')
