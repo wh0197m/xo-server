@@ -1,3 +1,5 @@
+import { format } from 'json-rpc-peer'
+
 // ===================================================================
 
 export async function set ({
@@ -74,15 +76,17 @@ export async function installAllPatches ({ pool }) {
   await this.getXapi(pool).installAllPoolPatchesOnAllHosts()
 }
 
-installPatch.params = {
+installAllPatches.params = {
   pool: {
     type: 'string'
   }
 }
 
-installPatch.resolve = {
+installAllPatches.resolve = {
   pool: ['pool', 'pool', 'administrate']
 }
+
+installAllPatches.description = 'Install automatically all patches for every hosts of a pool'
 
 // -------------------------------------------------------------------
 
@@ -150,4 +154,41 @@ getLicenseState.params = {
 
 getLicenseState.resolve = {
   pool: ['pool', 'pool', 'administrate']
+}
+
+// -------------------------------------------------------------------
+
+async function handleInstallSupplementalPack (req, res, { poolId }) {
+  const xapi = this.getXapi(poolId)
+
+  // Timeout seems to be broken in Node 4.
+  // See https://github.com/nodejs/node/issues/3319
+  req.setTimeout(43200000) // 12 hours
+  req.length = req.headers['content-length']
+
+  try {
+    await xapi.installSupplementalPackOnAllHosts(req)
+    res.end(format.response(0))
+  } catch (e) {
+    res.writeHead(500)
+    res.end(format.error(0, new Error(e.message)))
+  }
+
+  return
+}
+
+export async function installSupplementalPack ({ pool }) {
+  return {
+    $sendTo: await this.registerHttpRequest(handleInstallSupplementalPack, { poolId: pool.id })
+  }
+}
+
+installSupplementalPack.description = 'installs supplemental pack from ISO file on all hosts'
+
+installSupplementalPack.params = {
+  pool: { type: 'string' }
+}
+
+installSupplementalPack.resolve = {
+  pool: ['pool', 'pool', 'admin']
 }

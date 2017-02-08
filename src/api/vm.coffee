@@ -23,6 +23,7 @@ startsWith = require 'lodash/startsWith'
   formatXml: $js2xml,
   isArray: $isArray,
   map,
+  mapFilter,
   mapToArray,
   noop,
   parseSize,
@@ -301,6 +302,30 @@ delete_ = $coroutine ({vm, delete_disks: deleteDisks}) ->
 
   xapi = @getXapi(vm)
 
+  @getAllAcls().then((acls) =>
+    Promise.all(mapFilter(acls, (acl) =>
+      if (acl.object == vm.id)
+        return pCatch.call(
+          @removeAcl(acl.subject, acl.object, acl.action),
+          noop
+        )
+    ))
+  )
+
+  # Update IP pools
+  yield Promise.all(map(vm.VIFs, (vifId) =>
+    vif = xapi.getObject(vifId)
+    return pCatch.call(
+      this.allocIpAddresses(
+        vifId,
+        null,
+        concat(vif.ipv4_allowed, vif.ipv6_allowed)
+      ),
+      noop
+    )
+  ))
+
+  # Update resource sets
   resourceSet = xapi.xo.getData(vm._xapiId, 'resourceSet')
   if resourceSet?
     disk = 0
@@ -316,18 +341,6 @@ delete_ = $coroutine ({vm, delete_disks: deleteDisks}) ->
 
       return
     )
-
-    yield Promise.all(map(vm.VIFs, (vifId) =>
-      vif = xapi.getObject(vifId)
-      return pCatch.call(
-        this.allocIpAddresses(
-          vifId,
-          null,
-          concat(vif.ipv4_allowed, vif.ipv6_allowed)
-        ),
-        noop
-      )
-    ))
 
     resourceSetUsage = @computeVmResourcesUsage(vm)
     ipPoolsUsage = yield @computeVmIpPoolsUsage(vm)
