@@ -32,7 +32,7 @@ async function runCmd (command, argArray) {
 }
 
 async function runSsh (ip, command) {
-  return await runCmd('ssh', [ '-o', 'StrictHostKeyChecking=no', 'root@' + ip, command ])
+  return await runCmd('ssh', ['-o', 'StrictHostKeyChecking=no', 'root@' + ip, command])
 }
 
 export async function getPeers ({ ip }) {
@@ -46,8 +46,8 @@ export async function getPeers ({ ip }) {
    * */
   let peers = result.trim().split('\n').slice(1)
     .map(line => (line.split('\t').map(elem => elem.trim())))
-    .map(line => line[ 1 ] === 'localhost' ? [ line[ 0 ], ip, line[ 2 ] ] : line)
-    .map(line => ({ uuid: line[ 0 ], hostname: line[ 1 ], state: line[ 2 ] }))
+    .map(line => line[1] === 'localhost' ? [line[0], ip, line[2]] : line)
+    .map(line => ({ uuid: line[0], hostname: line[1], state: line[2] }))
     .sort((l1, l2) => l1.hostname.localeCompare(l2.hostname))
   /* and now:
    [
@@ -82,17 +82,17 @@ getPeers.params = {
 
 export async function getVolumeInfo ({ sr }) {
   const xapi = this.getXapi(sr)
-  const config = xapi.xo.getData(sr, 'xosan_config')
   const giantIPtoVMDict = {}
-  config.forEach(conf => {
-    giantIPtoVMDict[ conf.vm.ip ] = xapi.getObject(conf.vm.id)
+  const nodes = xapi.xo.getData(sr, 'xosan_config').nodes
+  nodes.forEach(conf => {
+    giantIPtoVMDict[conf.vm.ip] = xapi.getObject(conf.vm.id)
   })
-  const oneHostAndVm = config[ 0 ]
+  const oneHostAndVm = nodes[0]
   const resultCmd = await remoteSsh(xapi, {
     host: xapi.getObject(oneHostAndVm.host),
     address: oneHostAndVm.vm.ip
   }, 'gluster volume info xosan')
-  const result = resultCmd[ 'stdout' ]
+  const result = resultCmd['stdout']
 
   /*
    Volume Name: xosan
@@ -128,17 +128,17 @@ export async function getVolumeInfo ({ sr }) {
   let info = fromPairs(result.trim().split('\n')
     .map(line => line.split(':').map(val => val.trim()))
     // some lines have more than one ":", re-assemble them
-    .map(line => [ line[ 0 ], line.slice(1).join(':') ]))
+    .map(line => [line[0], line.slice(1).join(':')]))
   let getNumber = item => parseInt(item.substr(5))
   let brickKeys = Object.keys(info).filter(key => key.match(/^Brick[1-9]/)).sort((i1, i2) => getNumber(i1) - getNumber(i2))
   // expected brickKeys : [ 'Brick1', 'Brick2', 'Brick3' ]
-  info[ 'Bricks' ] = brickKeys.map(key => {
-    const ip = info[ key ].split(':')[ 0 ]
-    return { config: info[ key ], ip: ip, vm: giantIPtoVMDict[ ip ] }
+  info['Bricks'] = brickKeys.map(key => {
+    const ip = info[key].split(':')[0]
+    return { config: info[key], ip: ip, vm: giantIPtoVMDict[ip] }
   })
   await new Promise((resolve, reject) => arp.table((err, entry) => {
     if (entry) {
-      const brick = info[ 'Bricks' ].find(element => element.config.split(':')[ 0 ] === entry.ip)
+      const brick = info['Bricks'].find(element => element.config.split(':')[0] === entry.ip)
       if (brick) {
         brick.mac = entry.mac
       }
@@ -159,7 +159,7 @@ getVolumeInfo.params = {
   }
 }
 getVolumeInfo.resolve = {
-  sr: [ 'sr', 'SR', 'administrate' ]
+  sr: ['sr', 'SR', 'administrate']
 }
 function trucate2048 (value) {
   return 2048 * Math.floor(value / 2048)
@@ -177,11 +177,11 @@ async function prepareGlusterVm (xapi, vmAndParam, xosanNetwork) {
   let vm = vmAndParam.vm
   //refresh the object so that sizes are correct
   const params = vmAndParam.params
-  const ip = params.xenstore_data[ 'vm-data/ip' ]
+  const ip = params.xenstore_data['vm-data/ip']
   const sr = xapi.getObject(params.sr.$id)
   await xapi._waitObjectState(sr.$id, sr => Boolean(sr.$PBDs))
-  let host = xapi.getObject(xapi.getObject(sr.$PBDs[ 0 ]).host)
-  let firstVif = vm.$VIFs[ 0 ]
+  let host = xapi.getObject(xapi.getObject(sr.$PBDs[0]).host)
+  let firstVif = vm.$VIFs[0]
   if (xosanNetwork.$id !== firstVif.$network.$id) {
     console.log('VIF in wrong network (' + firstVif.$network.name_label + '), moving to correct one: ' + xosanNetwork.name_label)
     await xapi.call('VIF.move', firstVif.$ref, xosanNetwork.$ref)
@@ -211,26 +211,26 @@ async function callPlugin (xapi, host, command, params) {
 }
 
 async function remoteSsh (xapi, hostAndAddress, cmd) {
-  return await callPlugin(xapi, hostAndAddress.host, 'run_ssh', {
+  const result = await callPlugin(xapi, hostAndAddress.host, 'run_ssh', {
     destination: 'root@' + hostAndAddress.address,
     cmd: cmd
   })
+  if (result.exit != 0) {
+    throw new Error("ssh error: " + JSON.stringify(result))
+  }
+  return result
 }
 
 async function setPifIp (xapi, pif, address) {
-  console.log('before PIF.reconfigure_ip', address)
   await xapi.call('PIF.reconfigure_ip', pif.$ref, 'Static', address, '255.255.255.0', NETWORK_PREFIX + '1', '')
-  console.log('after PIF.reconfigure_ip')
 }
 
 export async function createVM ({ pif, vlan, srs }) {
-  console.log('vlan', vlan)
-  console.log('pif', pif)
   let vmIpLastNumber = 101
   let hostIpLastNumber = 1
   try {
     if (srs.length > 0) {
-      let xapi = find(this.getAllXapis(), xapi => (xapi.getObject(srs[ 0 ])))
+      let xapi = find(this.getAllXapis(), xapi => (xapi.getObject(srs[0])))
       let xosanNetwork = await xapi.createNetwork({
         name: 'XOSAN network',
         description: 'XOSAN network',
@@ -238,16 +238,13 @@ export async function createVM ({ pif, vlan, srs }) {
         mtu: 9000,
         vlan: +vlan
       })
-      console.log('network created')
-      console.log('newNetwork', xosanNetwork)
       await Promise.all(xosanNetwork.$PIFs.map(pif => setPifIp(xapi, pif, NETWORK_PREFIX + (hostIpLastNumber++))))
-      console.log('newNetwork', xosanNetwork.$PIFs)
       let sshKey = xapi.xo.getData(xapi.pool, 'xosan_ssh_key')
       if (!sshKey) {
         try {
           await fs.access(SSH_KEY_FILE, fs.constants.R_OK)
         } catch (e) {
-          await runCmd('ssh-keygen', [ '-q', '-f', SSH_KEY_FILE, '-t', 'rsa', '-b', '4096', '-N', '' ])
+          await runCmd('ssh-keygen', ['-q', '-f', SSH_KEY_FILE, '-t', 'rsa', '-b', '4096', '-N', ''])
         }
         sshKey = {
           private: await fs.readFile(SSH_KEY_FILE, 'ascii'),
@@ -261,7 +258,7 @@ export async function createVM ({ pif, vlan, srs }) {
 
       const vmParameters = map(srs, srId => {
         const sr = xapi.getObject(srId)
-        const host = xapi.getObject(xapi.getObject(sr.$PBDs[ 0 ]).host)
+        const host = xapi.getObject(xapi.getObject(sr.$PBDs[0]).host)
         return {
           sr,
           host,
@@ -282,40 +279,56 @@ export async function createVM ({ pif, vlan, srs }) {
         public_key,
         force: 'true'
       })))
-      console.log('network VIFS: ', xosanNetwork.$VIFs)
-      console.log('network PIFS: ', xosanNetwork.$PIFs, xosanNetwork.$PIFs.map(pif => pif.$metrics))
-      const firstVM = await importVM(xapi, vmParameters[ 0 ].sr)
+      const firstVM = await importVM(xapi, vmParameters[0].sr)
       await xapi.editVm(firstVM, {
         autoPoweron: true
       })
-      const vmsAndParams = [ {
+      const vmsAndParams = [{
         vm: firstVM,
-        params: vmParameters[ 0 ]
-      } ].concat(await Promise.all(vmParameters.slice(1).map(param => copyVm(xapi, firstVM, param))))
+        params: vmParameters[0]
+      }].concat(await Promise.all(vmParameters.slice(1).map(param => copyVm(xapi, firstVM, param))))
 
       const ipAndHosts = await Promise.all(map(vmsAndParams, vmAndParam => prepareGlusterVm(xapi, vmAndParam, xosanNetwork)))
-      const firstIpAndHost = ipAndHosts[ 0 ]
+      const firstIpAndHost = ipAndHosts[0]
       for (let i = 1; i < ipAndHosts.length; i++) {
-        console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster peer probe ' + ipAndHosts[ i ].address))
+        console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster peer probe ' + ipAndHosts[i].address))
       }
-      const volumeCreation = 'gluster volume create xosan disperse ' + ipAndHosts.length +
-        ' redundancy 1 ' + ipAndHosts.map(ipAndHosts => (ipAndHosts.address + ':/bricks/xosan/xosandir')).join(' ')
+      const configByType = {
+        replica: ['gluster volume set xosan cluster.data-self-heal on'],
+        disperse: []
+      }
+      const volumeType = 'disperse'
+      const volumeCreation = 'gluster volume create xosan ' + volumeType + ' ' + ipAndHosts.length + ' '
+        + ipAndHosts.map(ipAndHosts => (ipAndHosts.address + ':/bricks/xosan/xosandir')).join(' ')
       console.log('creating volume: ', volumeCreation)
       console.log(await remoteSsh(xapi, firstIpAndHost, volumeCreation))
-      console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan group virt'))
-      console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan features.shard on'))
-      console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan features.shard-block-size 16MB'))
+      console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan network.remote-dio enable'))
+      console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan cluster.eager-lock enable'))
+      console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.io-cache off'))
+      console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.read-ahead off'))
+      console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.quick-read off'))
+      console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.strict-write-ordering off'))
+      console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan client.event-threads 8'))
+      console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan server.event-threads 8'))
+      console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.io-thread-count 64'))
       console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.stat-prefetch on'))
+      console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan features.shard on'))
+      console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan features.shard-block-size 512MB'))
+      for (let confChunk of configByType[volumeType]) {
+        console.log(await remoteSsh(xapi, firstIpAndHost, confChunk))
+      }
       console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume start xosan'))
+
       console.log('xosan gluster volume started')
       const config = { server: firstIpAndHost.address + ':/xosan' }
-      const xosanSr = await xapi.call('SR.create', srsObjects[ 0 ].$PBDs[ 0 ].$host.$ref, config, 0, 'XOSAN', 'XOSAN', 'xosan', '', true, {})
-      console.log('xosan_hosts0', vmParameters.map(param => param.host.$id))
-      await xapi.xo.setData(xosanSr, 'xosan_config', ipAndHosts.map(param => ({
-        host: param.host.$id,
-        vm: { id: param.vm.$id, ip: param.address }
-      })))
-      await xapi.xo.setData(xapi.pool, 'xosan_sr', xosanSr.$id)
+      const xosanSr = await xapi.call('SR.create', srsObjects[0].$PBDs[0].$host.$ref, config, 0, 'XOSAN', 'XOSAN', 'xosan', '', true, {})
+      await xapi.xo.setData(xosanSr, 'xosan_config', {
+        nodes: ipAndHosts.map(param => ({
+          host: param.host.$id,
+          vm: { id: param.vm.$id, ip: param.address }
+        })),
+        network: xosanNetwork.$id
+      })
     }
   } catch (e) {
     console.log(e)
@@ -340,6 +353,6 @@ createVM.params = {
 }
 
 createVM.resolve = {
-  srs: [ 'sr', 'SR', 'administrate' ],
-  pif: [ 'pif', 'PIF', 'administrate' ]
+  srs: ['sr', 'SR', 'administrate'],
+  pif: ['pif', 'PIF', 'administrate']
 }
