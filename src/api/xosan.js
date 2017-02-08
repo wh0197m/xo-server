@@ -225,7 +225,7 @@ async function setPifIp (xapi, pif, address) {
   await xapi.call('PIF.reconfigure_ip', pif.$ref, 'Static', address, '255.255.255.0', NETWORK_PREFIX + '1', '')
 }
 
-export async function createVM ({ pif, vlan, srs }) {
+export async function createVM ({ pif, vlan, srs, glusterType }) {
   let vmIpLastNumber = 101
   let hostIpLastNumber = 1
   try {
@@ -297,8 +297,7 @@ export async function createVM ({ pif, vlan, srs }) {
         replica: ['gluster volume set xosan cluster.data-self-heal on'],
         disperse: []
       }
-      const volumeType = 'disperse'
-      const volumeCreation = 'gluster volume create xosan ' + volumeType + ' ' + ipAndHosts.length + ' '
+      const volumeCreation = 'gluster volume create xosan ' + glusterType + ' ' + ipAndHosts.length + ' '
         + ipAndHosts.map(ipAndHosts => (ipAndHosts.address + ':/bricks/xosan/xosandir')).join(' ')
       console.log('creating volume: ', volumeCreation)
       console.log(await remoteSsh(xapi, firstIpAndHost, volumeCreation))
@@ -314,7 +313,7 @@ export async function createVM ({ pif, vlan, srs }) {
       console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.stat-prefetch on'))
       console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan features.shard on'))
       console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan features.shard-block-size 512MB'))
-      for (let confChunk of configByType[volumeType]) {
+      for (let confChunk of configByType[glusterType]) {
         console.log(await remoteSsh(xapi, firstIpAndHost, confChunk))
       }
       console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume start xosan'))
@@ -348,6 +347,9 @@ createVM.params = {
     type: 'string'
   },
   vlan: {
+    type: 'string'
+  },
+  glusterType: {
     type: 'string'
   }
 }
