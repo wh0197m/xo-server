@@ -1,5 +1,4 @@
 import fromPairs from 'lodash/fromPairs'
-import find from 'lodash/find'
 import fs from 'fs-promise'
 import map from 'lodash/map'
 import arp from 'arp-a'
@@ -9,6 +8,9 @@ import { createReadStream } from 'fs'
 
 const SSH_KEY_FILE = 'id_rsa_xosan'
 const NETWORK_PREFIX = '172.31.100.'
+
+const XOSAN_VM_SYSTEM_DISK_SIZE = 10 * 1024 * 1024 * 1024
+const XOSAN_DATA_DISK_USEAGE_RATIO = 0.99
 
 async function runCmd (command, argArray) {
   return new Promise((resolve, reject) => {
@@ -194,7 +196,7 @@ async function prepareGlusterVm (xapi, vmAndParam, xosanNetwork) {
   const dataDisk = vm.$VBDs.map(vbd => vbd.$VDI).find(vdi => vdi && vdi.name_label === 'data')
   const srFreeSpace = sr.physical_size - sr.physical_utilisation
   //we use a percentage because it looks like the VDI overhead is proportional
-  const newSize = trucate2048((srFreeSpace + dataDisk.virtual_size) * 0.99)
+  const newSize = trucate2048((srFreeSpace + dataDisk.virtual_size) * XOSAN_DATA_DISK_USEAGE_RATIO)
   await xapi._resizeVdi(dataDisk, newSize)
   await xapi.startVm(vm)
   console.log('waiting for boot of ', ip)
@@ -225,11 +227,11 @@ async function setPifIp (xapi, pif, address) {
   await xapi.call('PIF.reconfigure_ip', pif.$ref, 'Static', address, '255.255.255.0', NETWORK_PREFIX + '1', '')
 }
 
-export async function createVM ({ pif, vlan, srs, glusterType }) {
+export async function createSR ({ pif, vlan, srs, glusterType, redundancy }) {
   let vmIpLastNumber = 101
   let hostIpLastNumber = 1
   if (srs.length > 0) {
-    let xapi = find(this.getAllXapis(), xapi => (xapi.getObject(srs[0])))
+    let xapi = this.getXapi(srs[0])
     let xosanNetwork = await xapi.createNetwork({
       name: 'XOSAN network',
       description: 'XOSAN network',
@@ -293,11 +295,18 @@ export async function createVM ({ pif, vlan, srs, glusterType }) {
       console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster peer probe ' + ipAndHosts[i].address))
     }
     const configByType = {
-      replica: ['gluster volume set xosan cluster.data-self-heal on'],
-      disperse: []
+      replica: {
+        creation: 'replica ' + redundancy + ' ',
+        extra: ['gluster volume set xosan cluster.data-self-heal on']
+      },
+      disperse: {
+        creation: 'disperse ' + ipAndHosts.length + ' redundancy ' + redundancy + ' ',
+        extra: []
+      }
     }
-    const volumeCreation = 'gluster volume create xosan ' + glusterType + ' ' + ipAndHosts.length + ' '
-      + ipAndHosts.map(ipAndHosts => (ipAndHosts.address + ':/bricks/xosan/xosandir')).join(' ')
+
+    const volumeCreation = 'gluster volume create xosan ' + configByType[glusterType].creation +
+      ' ' + ipAndHosts.map(ipAndHosts => (ipAndHosts.address + ':/bricks/xosan/xosandir')).join(' ')
     console.log('creating volume: ', volumeCreation)
     console.log(await remoteSsh(xapi, firstIpAndHost, volumeCreation))
     console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan network.remote-dio enable'))
@@ -312,7 +321,7 @@ export async function createVM ({ pif, vlan, srs, glusterType }) {
     console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.stat-prefetch on'))
     console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan features.shard on'))
     console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan features.shard-block-size 512MB'))
-    for (let confChunk of configByType[glusterType]) {
+    for (let confChunk of configByType[glusterType].extra) {
       console.log(await remoteSsh(xapi, firstIpAndHost, confChunk))
     }
     console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume start xosan'))
@@ -330,9 +339,9 @@ export async function createVM ({ pif, vlan, srs, glusterType }) {
   }
 }
 
-createVM.description = 'create gluster VM'
-createVM.permission = 'admin'
-createVM.params = {
+createSR.description = 'create gluster VM'
+createSR.permission = 'admin'
+createSR.params = {
   srs: {
     type: 'array',
     items: {
@@ -347,10 +356,70 @@ createVM.params = {
   },
   glusterType: {
     type: 'string'
+  },
+  redundancy: {
+    type: 'number'
   }
 }
 
-createVM.resolve = {
+createSR.resolve = {
   srs: ['sr', 'SR', 'administrate'],
   pif: ['pif', 'PIF', 'administrate']
+}
+
+const POSSIBLE_CONFIGURATIONS = []
+POSSIBLE_CONFIGURATIONS[2] = [{ layout: 'replica', redundancy: 2, capacity: 1 }]
+POSSIBLE_CONFIGURATIONS[3] = [
+  { layout: 'disperse', redundancy: 1, capacity: 2 },
+  { layout: 'replica', redundancy: 3, capacity: 1 }]
+POSSIBLE_CONFIGURATIONS[4] = [{ layout: 'replica', redundancy: 2, capacity: 1 }]
+POSSIBLE_CONFIGURATIONS[5] = [{ layout: 'disperse', redundancy: 1, capacity: 4 }]
+POSSIBLE_CONFIGURATIONS[6] = [
+  { layout: 'disperse', redundancy: 2, capacity: 4 },
+  { layout: 'replica', redundancy: 2, capacity: 3 },
+  { layout: 'replica', redundancy: 3, capacity: 2 }]
+POSSIBLE_CONFIGURATIONS[7] = [{ layout: 'disperse', redundancy: 3, capacity: 4 }]
+POSSIBLE_CONFIGURATIONS[8] = [{ layout: 'replica', redundancy: 2, capacity: 4 }]
+POSSIBLE_CONFIGURATIONS[9] = [
+  { layout: 'disperse', redundancy: 1, capacity: 8 },
+  { layout: 'replica', redundancy: 3, capacity: 3 }]
+POSSIBLE_CONFIGURATIONS[10] = [
+  { layout: 'disperse', redundancy: 2, capacity: 8 },
+  { layout: 'replica', redundancy: 2, capacity: 5 }]
+POSSIBLE_CONFIGURATIONS[11] = [{ layout: 'disperse', redundancy: 3, capacity: 8 }]
+POSSIBLE_CONFIGURATIONS[12] = [
+  { layout: 'disperse', redundancy: 4, capacity: 8 },
+  { layout: 'replica', redundancy: 2, capacity: 6 }]
+POSSIBLE_CONFIGURATIONS[13] = [{ layout: 'disperse', redundancy: 5, capacity: 8 }]
+POSSIBLE_CONFIGURATIONS[14] = [
+  { layout: 'disperse', redundancy: 6, capacity: 8 },
+  { layout: 'replica', redundancy: 2, capacity: 7 }]
+POSSIBLE_CONFIGURATIONS[15] = [
+  { layout: 'disperse', redundancy: 7, capacity: 8 },
+  { layout: 'replica', redundancy: 3, capacity: 5 }]
+POSSIBLE_CONFIGURATIONS[16] = [{ layout: 'replica', redundancy: 2, capacity: 8 }]
+
+
+export async function computeXosanPossibleOptions ({ lvmSrs }) {
+  const count = lvmSrs.length
+  const configurations = POSSIBLE_CONFIGURATIONS[count]
+  if (!configurations)
+    return null
+  if (count > 0) {
+    let xapi = this.getXapi(lvmSrs[0])
+    let srs = map(lvmSrs, srId => xapi.getObject(srId))
+    let srSizes = map(srs, sr => sr.physical_size - sr.physical_utilisation)
+    let minSize = Math.min.apply(null, srSizes)
+    let brickSize = (minSize - XOSAN_VM_SYSTEM_DISK_SIZE) * XOSAN_DATA_DISK_USEAGE_RATIO
+    return configurations.map(conf => Object.assign({}, conf, { availableSpace: brickSize * conf.capacity }))
+  }
+}
+
+computeXosanPossibleOptions.params = {
+  lvmSrs: {
+    type: 'array',
+    items: {
+      type: 'string'
+    }
+  }
 }
