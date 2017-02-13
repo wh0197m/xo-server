@@ -193,7 +193,7 @@ async function prepareGlusterVm (xapi, vmAndParam, xosanNetwork) {
     name_description: params.name_description
   })
   await xapi.call('VM.set_xenstore_data', vm.$ref, params.xenstore_data)
-  const dataDisk = vm.$VBDs.map(vbd => vbd.$VDI).find(vdi => vdi && vdi.name_label === 'data')
+  const dataDisk = vm.$VBDs.map(vbd => vbd.$VDI).find(vdi => vdi && vdi.name_label === 'xosan_data')
   const srFreeSpace = sr.physical_size - sr.physical_utilisation
   //we use a percentage because it looks like the VDI overhead is proportional
   const newSize = trucate2048((srFreeSpace + dataDisk.virtual_size) * XOSAN_DATA_DISK_USEAGE_RATIO)
