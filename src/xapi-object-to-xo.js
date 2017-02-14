@@ -422,6 +422,7 @@ const TRANSFORMS = {
       attached: Boolean(obj.currently_attached),
       isBondMaster: !isEmpty(obj.bond_master_of),
       device: obj.device,
+      deviceName: metrics && metrics.device_name,
       dns: obj.DNS,
       disallowUnplug: Boolean(obj.disallow_unplug),
       gateway: obj.gateway,
@@ -514,7 +515,7 @@ const TRANSFORMS = {
       MTU: +obj.MTU,
       name_description: obj.name_description,
       name_label: obj.name_label,
-      other_config:obj.other_config,
+      other_config: obj.other_config,
       tags: obj.tags,
       PIFs: link(obj, 'PIFs'),
       VIFs: link(obj, 'VIFs')

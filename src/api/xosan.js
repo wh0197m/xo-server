@@ -3,8 +3,6 @@ import fs from 'fs-promise'
 import map from 'lodash/map'
 import arp from 'arp-a'
 import { spawn } from 'child_process'
-import { createReadStream } from 'fs'
-
 
 const SSH_KEY_FILE = 'id_rsa_xosan'
 const NETWORK_PREFIX = '172.31.100.'
@@ -85,7 +83,7 @@ getPeers.params = {
 export async function getVolumeInfo ({ sr }) {
   const xapi = this.getXapi(sr)
   const giantIPtoVMDict = {}
-  const nodes = xapi.xo.getData(sr, 'xosan_config').nodes
+  const nodes = xapi.xo.getData(sr, 'xosan_config').nodes // FIXME: getData can return undefined
   nodes.forEach(conf => {
     giantIPtoVMDict[conf.vm.ip] = xapi.getObject(conf.vm.id)
   })
@@ -129,7 +127,7 @@ export async function getVolumeInfo ({ sr }) {
    */
   let info = fromPairs(result.trim().split('\n')
     .map(line => line.split(':').map(val => val.trim()))
-    // some lines have more than one ":", re-assemble them
+    // some lines have more than one ':', re-assemble them
     .map(line => [line[0], line.slice(1).join(':')]))
   let getNumber = item => parseInt(item.substr(5))
   let brickKeys = Object.keys(info).filter(key => key.match(/^Brick[1-9]/)).sort((i1, i2) => getNumber(i1) - getNumber(i2))
@@ -167,17 +165,13 @@ function trucate2048 (value) {
   return 2048 * Math.floor(value / 2048)
 }
 
-async function importVM (xapi, sr) {
-  return await xapi.importVm(createReadStream('../XOSANTEMPLATE.xva'), { srId: sr.$ref, type: 'xva' })
-}
-
 async function copyVm (xapi, originalVm, params) {
   return { vm: await xapi.copyVm(originalVm, params.sr), params }
 }
 
 async function prepareGlusterVm (xapi, vmAndParam, xosanNetwork) {
   let vm = vmAndParam.vm
-  //refresh the object so that sizes are correct
+  // refresh the object so that sizes are correct
   const params = vmAndParam.params
   const ip = params.xenstore_data['vm-data/ip']
   const sr = xapi.getObject(params.sr.$id)
@@ -195,7 +189,7 @@ async function prepareGlusterVm (xapi, vmAndParam, xosanNetwork) {
   await xapi.call('VM.set_xenstore_data', vm.$ref, params.xenstore_data)
   const dataDisk = vm.$VBDs.map(vbd => vbd.$VDI).find(vdi => vdi && vdi.name_label === 'xosan_data')
   const srFreeSpace = sr.physical_size - sr.physical_utilisation
-  //we use a percentage because it looks like the VDI overhead is proportional
+  // we use a percentage because it looks like the VDI overhead is proportional
   const newSize = trucate2048((srFreeSpace + dataDisk.virtual_size) * XOSAN_DATA_DISK_USEAGE_RATIO)
   await xapi._resizeVdi(dataDisk, newSize)
   await xapi.startVm(vm)
@@ -217,8 +211,8 @@ async function remoteSsh (xapi, hostAndAddress, cmd) {
     destination: 'root@' + hostAndAddress.address,
     cmd: cmd
   })
-  if (result.exit != 0) {
-    throw new Error("ssh error: " + JSON.stringify(result))
+  if (result.exit !== 0) {
+    throw new Error('ssh error: ' + JSON.stringify(result))
   }
   return result
 }
@@ -227,60 +221,69 @@ async function setPifIp (xapi, pif, address) {
   await xapi.call('PIF.reconfigure_ip', pif.$ref, 'Static', address, '255.255.255.0', NETWORK_PREFIX + '1', '')
 }
 
-export async function createSR ({ pif, vlan, srs, glusterType, redundancy }) {
+export async function createSR ({ template, pif, vlan, srs, glusterType, redundancy }) {
+  if (!this.requestResource) {
+    throw new Error('requestResource is not a function')
+  }
+
+  if (srs.length < 1) {
+    return // TODO: throw an error
+  }
+
   let vmIpLastNumber = 101
   let hostIpLastNumber = 1
-  if (srs.length > 0) {
-    let xapi = this.getXapi(srs[0])
-    let xosanNetwork = await xapi.createNetwork({
-      name: 'XOSAN network',
-      description: 'XOSAN network',
-      pifId: pif._xapiId,
-      mtu: 9000,
-      vlan: +vlan
-    })
-    await Promise.all(xosanNetwork.$PIFs.map(pif => setPifIp(xapi, pif, NETWORK_PREFIX + (hostIpLastNumber++))))
-    let sshKey = xapi.xo.getData(xapi.pool, 'xosan_ssh_key')
-    if (!sshKey) {
-      try {
-        await fs.access(SSH_KEY_FILE, fs.constants.R_OK)
-      } catch (e) {
-        await runCmd('ssh-keygen', ['-q', '-f', SSH_KEY_FILE, '-t', 'rsa', '-b', '4096', '-N', ''])
-      }
-      sshKey = {
-        private: await fs.readFile(SSH_KEY_FILE, 'ascii'),
-        public: await fs.readFile(SSH_KEY_FILE + '.pub', 'ascii')
-      }
-      xapi.xo.setData(xapi.pool, 'xosan_ssh_key', sshKey)
+  let xapi = this.getXapi(srs[0])
+  let xosanNetwork = await xapi.createNetwork({
+    name: 'XOSAN network',
+    description: 'XOSAN network',
+    pifId: pif._xapiId,
+    mtu: 9000,
+    vlan: +vlan
+  })
+  await Promise.all(xosanNetwork.$PIFs.map(pif => setPifIp(xapi, pif, NETWORK_PREFIX + (hostIpLastNumber++))))
+  let sshKey = xapi.xo.getData(xapi.pool, 'xosan_ssh_key')
+  if (!sshKey) {
+    try {
+      await fs.access(SSH_KEY_FILE, fs.constants.R_OK)
+    } catch (e) {
+      await runCmd('ssh-keygen', ['-q', '-f', SSH_KEY_FILE, '-t', 'rsa', '-b', '4096', '-N', ''])
     }
-    const public_key = sshKey.public
-    const private_key = sshKey.private
-    const srsObjects = map(srs, srId => xapi.getObject(srId))
+    sshKey = {
+      private: await fs.readFile(SSH_KEY_FILE, 'ascii'),
+      public: await fs.readFile(SSH_KEY_FILE + '.pub', 'ascii')
+    }
+    xapi.xo.setData(xapi.pool, 'xosan_ssh_key', sshKey)
+  }
+  const publicKey = sshKey.public
+  const privateKey = sshKey.private
+  const srsObjects = map(srs, srId => xapi.getObject(srId))
 
-    const vmParameters = map(srs, srId => {
-      const sr = xapi.getObject(srId)
-      const host = xapi.getObject(xapi.getObject(sr.$PBDs[0]).host)
-      return {
-        sr,
-        host,
-        name_label: 'XOSAN - ' + sr.name_label + ' - ' + host.name_label,
-        name_description: 'Xosan VM storing data on volume ' + sr.name_label,
-        // the values of the xenstore_data object *have* to be string, don't forget.
-        xenstore_data: {
-          'vm-data/hostname': 'XOSAN' + sr.name_label,
-          'vm-data/sshkey': public_key,
-          'vm-data/ip': NETWORK_PREFIX + (vmIpLastNumber++),
-          'vm-data/mtu': String(xosanNetwork.MTU),
-          'vm-data/vlan': String(vlan)
-        }
+  const vmParameters = map(srs, srId => {
+    const sr = xapi.getObject(srId)
+    const host = xapi.getObject(xapi.getObject(sr.$PBDs[0]).host)
+    return {
+      sr,
+      host,
+      name_label: 'XOSAN - ' + sr.name_label + ' - ' + host.name_label,
+      name_description: 'Xosan VM storing data on volume ' + sr.name_label,
+      // the values of the xenstore_data object *have* to be string, don't forget.
+      xenstore_data: {
+        'vm-data/hostname': 'XOSAN' + sr.name_label,
+        'vm-data/sshkey': publicKey,
+        'vm-data/ip': NETWORK_PREFIX + (vmIpLastNumber++),
+        'vm-data/mtu': String(xosanNetwork.MTU),
+        'vm-data/vlan': String(vlan)
       }
-    })
-    await Promise.all(vmParameters.map(vmParam => callPlugin(xapi, vmParam.host, 'receive_ssh_keys', {
-      private_key,
-      public_key,
-      force: 'true'
-    })))
-    const firstVM = await importVM(xapi, vmParameters[0].sr)
+    }
+  })
+  await Promise.all(vmParameters.map(vmParam => callPlugin(xapi, vmParam.host, 'receive_ssh_keys', {
+    private_key: privateKey,
+    public_key: publicKey,
+    force: 'true'
+  })))
+  const request = await this.requestResource('xosan', template.id, template.version)
+  request.on('response', async response => {
+    const firstVM = await xapi.importVm(response, { srId: vmParameters[0].sr.$ref, type: 'xva' })
     await xapi.editVm(firstVM, {
       autoPoweron: true
     })
@@ -336,7 +339,7 @@ export async function createSR ({ pif, vlan, srs, glusterType, redundancy }) {
       })),
       network: xosanNetwork.$id
     })
-  }
+  })
 }
 
 createSR.description = 'create gluster VM'
@@ -399,12 +402,12 @@ POSSIBLE_CONFIGURATIONS[15] = [
   { layout: 'replica', redundancy: 3, capacity: 5 }]
 POSSIBLE_CONFIGURATIONS[16] = [{ layout: 'replica', redundancy: 2, capacity: 8 }]
 
-
 export async function computeXosanPossibleOptions ({ lvmSrs }) {
   const count = lvmSrs.length
   const configurations = POSSIBLE_CONFIGURATIONS[count]
-  if (!configurations)
+  if (!configurations) {
     return null
+  }
   if (count > 0) {
     let xapi = this.getXapi(lvmSrs[0])
     let srs = map(lvmSrs, srId => xapi.getObject(srId))
@@ -423,3 +426,36 @@ computeXosanPossibleOptions.params = {
     }
   }
 }
+
+// ---------------------------------------------------------------------
+
+export async function downloadAndInstallXosanPack ({ namespace, id, version, pool }) {
+  if (!this.requestResource) {
+    throw new Error('requestResource is not a function')
+  }
+
+  const req = await this.requestResource(namespace, id, version)
+  console.log('pool.id', pool.id)
+  const xapi = this.getXapi(pool.id)
+  req.on('response', res => {
+    res.length = res.headers['content-length']
+    return xapi.installSupplementalPackOnAllHosts(res)
+  })
+
+  return
+}
+
+downloadAndInstallXosanPack.description = 'Register a resource via cloud plugin'
+
+downloadAndInstallXosanPack.params = {
+  namespace: { type: 'string' },
+  id: { type: 'string' },
+  version: { type: 'string' },
+  pool: { type: 'string' }
+}
+
+downloadAndInstallXosanPack.resolve = {
+  pool: ['pool', 'pool', 'administrate']
+}
+
+downloadAndInstallXosanPack.permission = 'admin'

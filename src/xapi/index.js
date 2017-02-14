@@ -1,5 +1,4 @@
 /* eslint-disable camelcase */
-
 import deferrable from 'golike-defer'
 import fatfs from 'fatfs'
 import tarStream from 'tar-stream'
@@ -1183,6 +1182,7 @@ export default class Xapi extends XapiBase {
         throw new Error('no SR available to store installation file')
       }
 
+      console.log('stream', stream)
       const vdi = await this._createSuppPackVdi(stream, sr)
       $defer(() => this._deleteVdi(vdi))
 

@@ -123,3 +123,33 @@ test.params = {
 test.permission = 'admin'
 
 // ---------------------------------------------------------------------
+
+export async function getResourceCatalog () {
+  return this.getResourceCatalog && this.getResourceCatalog()
+}
+
+getResourceCatalog.description = 'Get the list of all available templates'
+
+getResourceCatalog.permission = 'admin'
+
+// ---------------------------------------------------------------------
+
+export async function registerResource ({ namespace }) {
+  if (!this.registerResource) {
+    throw new Error('registerResource is not a function')
+  }
+
+  return this.registerResource(namespace)
+}
+
+registerResource.description = 'Register a resource via cloud plugin'
+
+registerResource.params = {
+  namespace: {
+    type: 'string'
+  }
+}
+
+registerResource.permission = 'admin'
+
+// ---------------------------------------------------------------------
