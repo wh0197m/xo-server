@@ -31,59 +31,13 @@ async function runCmd (command, argArray) {
   })
 }
 
-async function runSsh (ip, command) {
-  return await runCmd('ssh', ['-o', 'StrictHostKeyChecking=no', 'root@' + ip, command])
-}
-
-export async function getPeers ({ ip }) {
-  // ssh -o StrictHostKeyChecking=no  root@192.168.0.201 gluster pool list
-  const result = await runSsh(ip, 'gluster pool list')
-  /* expected result:
-   UUID\t\t\t\t\tHostname     \tState
-   953f8259-5ddf-4459-9846-933433cc7787\t192.168.0.202\t  Connected
-   b4a98ab8-4634-4916-9be6-c980298fe5ed\t192.168.0.203\tConnected
-   1ec28018-92ea-4662-b3da-fcb11c128c07\tlocalhost    \tConnected
-   * */
-  let peers = result.trim().split('\n').slice(1)
-    .map(line => (line.split('\t').map(elem => elem.trim())))
-    .map(line => line[1] === 'localhost' ? [line[0], ip, line[2]] : line)
-    .map(line => ({ uuid: line[0], hostname: line[1], state: line[2] }))
-    .sort((l1, l2) => l1.hostname.localeCompare(l2.hostname))
-  /* and now:
-   [
-   { uuid: '1ec28018-92ea-4662-b3da-fcb11c128c07', hostname: '192.168.0.201', state: 'Connected' },
-   { uuid: '953f8259-5ddf-4459-9846-933433cc7787', hostname: '192.168.0.202', state: 'Connected' },
-   { uuid: 'b4a98ab8-4634-4916-9be6-c980298fe5ed', hostname: '192.168.0.203', state: 'Connected' }
-   ]
-   */
-  await new Promise((resolve, reject) => arp.table((err, entry) => {
-    if (entry) {
-      const peer = peers.find(element => element.hostname === entry.ip)
-      if (peer) {
-        peer.mac = entry.mac
-      }
-    }
-    if (!entry && !err) {
-      resolve(peers)
-    }
-  }))
-  return peers
-}
-
-getPeers.description = 'find a gluster server peers'
-
-getPeers.permission = 'admin'
-
-getPeers.params = {
-  ip: {
-    type: 'string'
-  }
-}
-
 export async function getVolumeInfo ({ sr }) {
   const xapi = this.getXapi(sr)
   const giantIPtoVMDict = {}
-  const nodes = xapi.xo.getData(sr, 'xosan_config').nodes // FIXME: getData can return undefined
+  const nodes = xapi.xo.getData(sr, 'xosan_config').nodes
+  if (!nodes) {
+    return null;
+  }
   nodes.forEach(conf => {
     giantIPtoVMDict[conf.vm.ip] = xapi.getObject(conf.vm.id)
   })
