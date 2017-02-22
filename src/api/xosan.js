@@ -34,10 +34,11 @@ async function runCmd (command, argArray) {
 export async function getVolumeInfo ({ sr }) {
   const xapi = this.getXapi(sr)
   const giantIPtoVMDict = {}
-  const nodes = xapi.xo.getData(sr, 'xosan_config').nodes
-  if (!nodes) {
+  const data = xapi.xo.getData(sr, 'xosan_config')
+  if (!data || !data.nodes) {
     return null;
   }
+  const nodes = data.nodes
   nodes.forEach(conf => {
     giantIPtoVMDict[conf.vm.ip] = xapi.getObject(conf.vm.id)
   })
@@ -168,6 +169,7 @@ async function remoteSsh (xapi, hostAndAddress, cmd) {
   if (result.exit !== 0) {
     throw new Error('ssh error: ' + JSON.stringify(result))
   }
+  console.log(result)
   return result
 }
 
@@ -249,7 +251,7 @@ export async function createSR ({ template, pif, vlan, srs, glusterType, redunda
     const ipAndHosts = await Promise.all(map(vmsAndParams, vmAndParam => prepareGlusterVm(xapi, vmAndParam, xosanNetwork)))
     const firstIpAndHost = ipAndHosts[0]
     for (let i = 1; i < ipAndHosts.length; i++) {
-      console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster peer probe ' + ipAndHosts[i].address))
+      await remoteSsh(xapi, firstIpAndHost, 'gluster peer probe ' + ipAndHosts[i].address)
     }
     const configByType = {
       replica: {
@@ -265,23 +267,23 @@ export async function createSR ({ template, pif, vlan, srs, glusterType, redunda
     const volumeCreation = 'gluster volume create xosan ' + configByType[glusterType].creation +
       ' ' + ipAndHosts.map(ipAndHosts => (ipAndHosts.address + ':/bricks/xosan/xosandir')).join(' ')
     console.log('creating volume: ', volumeCreation)
-    console.log(await remoteSsh(xapi, firstIpAndHost, volumeCreation))
-    console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan network.remote-dio enable'))
-    console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan cluster.eager-lock enable'))
-    console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.io-cache off'))
-    console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.read-ahead off'))
-    console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.quick-read off'))
-    console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.strict-write-ordering off'))
-    console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan client.event-threads 8'))
-    console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan server.event-threads 8'))
-    console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.io-thread-count 64'))
-    console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.stat-prefetch on'))
-    console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan features.shard on'))
-    console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan features.shard-block-size 512MB'))
+    await remoteSsh(xapi, firstIpAndHost, volumeCreation)
+    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan network.remote-dio enable')
+    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan cluster.eager-lock enable')
+    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.io-cache off')
+    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.read-ahead off')
+    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.quick-read off')
+    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.strict-write-ordering off')
+    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan client.event-threads 8')
+    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan server.event-threads 8')
+    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.io-thread-count 64')
+    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.stat-prefetch on')
+    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan features.shard on')
+    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan features.shard-block-size 512MB')
     for (let confChunk of configByType[glusterType].extra) {
-      console.log(await remoteSsh(xapi, firstIpAndHost, confChunk))
+      await remoteSsh(xapi, firstIpAndHost, confChunk)
     }
-    console.log(await remoteSsh(xapi, firstIpAndHost, 'gluster volume start xosan'))
+    await remoteSsh(xapi, firstIpAndHost, 'gluster volume start xosan')
 
     console.log('xosan gluster volume started')
     const config = { server: firstIpAndHost.address + ':/xosan' }
