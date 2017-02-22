@@ -124,7 +124,7 @@ async function copyVm (xapi, originalVm, params) {
   return { vm: await xapi.copyVm(originalVm, params.sr), params }
 }
 
-async function prepareGlusterVm (xapi, vmAndParam, xosanNetwork) {
+async function prepareGlusterVm (xapi, vmAndParam, xosanNetwork, increaseDataDisk = true) {
   let vm = vmAndParam.vm
   // refresh the object so that sizes are correct
   const params = vmAndParam.params
@@ -142,11 +142,13 @@ async function prepareGlusterVm (xapi, vmAndParam, xosanNetwork) {
     name_description: params.name_description
   })
   await xapi.call('VM.set_xenstore_data', vm.$ref, params.xenstore_data)
-  const dataDisk = vm.$VBDs.map(vbd => vbd.$VDI).find(vdi => vdi && vdi.name_label === 'xosan_data')
-  const srFreeSpace = sr.physical_size - sr.physical_utilisation
-  // we use a percentage because it looks like the VDI overhead is proportional
-  const newSize = trucate2048((srFreeSpace + dataDisk.virtual_size) * XOSAN_DATA_DISK_USEAGE_RATIO)
-  await xapi._resizeVdi(dataDisk, newSize)
+  if (increaseDataDisk) {
+    const dataDisk = vm.$VBDs.map(vbd => vbd.$VDI).find(vdi => vdi && vdi.name_label === 'xosan_data')
+    const srFreeSpace = sr.physical_size - sr.physical_utilisation
+    // we use a percentage because it looks like the VDI overhead is proportional
+    const newSize = trucate2048((srFreeSpace + dataDisk.virtual_size) * XOSAN_DATA_DISK_USEAGE_RATIO)
+    await xapi._resizeVdi(dataDisk, newSize)
+  }
   await xapi.startVm(vm)
   console.log('waiting for boot of ', ip)
   // wait until we find the assigned IP in the networks, we are just checking the boot is complete
@@ -177,18 +179,8 @@ async function setPifIp (xapi, pif, address) {
   await xapi.call('PIF.reconfigure_ip', pif.$ref, 'Static', address, '255.255.255.0', NETWORK_PREFIX + '1', '')
 }
 
-export async function createSR ({ template, pif, vlan, srs, glusterType, redundancy }) {
-  if (!this.requestResource) {
-    throw new Error('requestResource is not a function')
-  }
-
-  if (srs.length < 1) {
-    return // TODO: throw an error
-  }
-
-  let vmIpLastNumber = 101
+async function createNetworkAndInsertHosts (xapi, pif, vlan) {
   let hostIpLastNumber = 1
-  let xapi = this.getXapi(srs[0])
   let xosanNetwork = await xapi.createNetwork({
     name: 'XOSAN network',
     description: 'XOSAN network',
@@ -197,6 +189,9 @@ export async function createSR ({ template, pif, vlan, srs, glusterType, redunda
     vlan: +vlan
   })
   await Promise.all(xosanNetwork.$PIFs.map(pif => setPifIp(xapi, pif, NETWORK_PREFIX + (hostIpLastNumber++))))
+  return xosanNetwork
+}
+async function getOrCreateSshKey (xapi) {
   let sshKey = xapi.xo.getData(xapi.pool, 'xosan_ssh_key')
   if (!sshKey) {
     try {
@@ -210,8 +205,65 @@ export async function createSR ({ template, pif, vlan, srs, glusterType, redunda
     }
     xapi.xo.setData(xapi.pool, 'xosan_ssh_key', sshKey)
   }
-  const publicKey = sshKey.public
-  const privateKey = sshKey.private
+  return sshKey
+}
+async function configureGluster (redundancy, ipAndHosts, xapi, firstIpAndHost, glusterType, arbiter = null) {
+  const configByType = {
+    replica: {
+      creation: 'replica ' + redundancy + ' ',
+      extra: ['gluster volume set xosan cluster.data-self-heal on']
+    },
+    disperse: {
+      creation: 'disperse ' + ipAndHosts.length + ' redundancy ' + redundancy + ' ',
+      extra: []
+    }
+  }
+  for (let i = 1; i < ipAndHosts.length; i++) {
+    await remoteSsh(xapi, firstIpAndHost, 'gluster peer probe ' + ipAndHosts[i].address)
+  }
+  let brickVms = ipAndHosts;
+  let creation = configByType[glusterType].creation
+  if (arbiter) {
+    await remoteSsh(xapi, firstIpAndHost, 'gluster peer probe ' + arbiter.address)
+    brickVms = brickVms.concat([arbiter])
+    creation = 'replica 3 arbiter 1'
+  }
+
+  const volumeCreation = 'gluster volume create xosan ' + creation +
+    ' ' + brickVms.map(ipAndHost => (ipAndHost.address + ':/bricks/xosan/xosandir')).join(' ')
+  console.log('creating volume: ', volumeCreation)
+  await remoteSsh(xapi, firstIpAndHost, volumeCreation)
+  await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan network.remote-dio enable')
+  await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan cluster.eager-lock enable')
+  await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.io-cache off')
+  await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.read-ahead off')
+  await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.quick-read off')
+  await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.strict-write-ordering off')
+  await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan client.event-threads 8')
+  await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan server.event-threads 8')
+  await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.io-thread-count 64')
+  await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.stat-prefetch on')
+  await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan features.shard on')
+  await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan features.shard-block-size 512MB')
+  for (let confChunk of configByType[glusterType].extra) {
+    await remoteSsh(xapi, firstIpAndHost, confChunk)
+  }
+  await remoteSsh(xapi, firstIpAndHost, 'gluster volume start xosan')
+}
+
+export async function createSR ({ template, pif, vlan, srs, glusterType, redundancy }) {
+  if (!this.requestResource) {
+    throw new Error('requestResource is not a function')
+  }
+
+  if (srs.length < 1) {
+    return // TODO: throw an error
+  }
+
+  let vmIpLastNumber = 101
+  let xapi = this.getXapi(srs[0])
+  let xosanNetwork = await createNetworkAndInsertHosts(xapi, pif, vlan)
+  let sshKey = await getOrCreateSshKey(xapi)
   const srsObjects = map(srs, srId => xapi.getObject(srId))
 
   const vmParameters = map(srs, srId => {
@@ -225,7 +277,7 @@ export async function createSR ({ template, pif, vlan, srs, glusterType, redunda
       // the values of the xenstore_data object *have* to be string, don't forget.
       xenstore_data: {
         'vm-data/hostname': 'XOSAN' + sr.name_label,
-        'vm-data/sshkey': publicKey,
+        'vm-data/sshkey': sshKey.public,
         'vm-data/ip': NETWORK_PREFIX + (vmIpLastNumber++),
         'vm-data/mtu': String(xosanNetwork.MTU),
         'vm-data/vlan': String(vlan)
@@ -233,8 +285,8 @@ export async function createSR ({ template, pif, vlan, srs, glusterType, redunda
     }
   })
   await Promise.all(vmParameters.map(vmParam => callPlugin(xapi, vmParam.host, 'receive_ssh_keys', {
-    private_key: privateKey,
-    public_key: publicKey,
+    private_key: sshKey.private,
+    public_key: sshKey.public,
     force: 'true'
   })))
   const request = await this.requestResource('xosan', template.id, template.version)
@@ -247,47 +299,34 @@ export async function createSR ({ template, pif, vlan, srs, glusterType, redunda
       vm: firstVM,
       params: vmParameters[0]
     }].concat(await Promise.all(vmParameters.slice(1).map(param => copyVm(xapi, firstVM, param))))
-
+    let arbiter = null;
+    if (srs.length == 2) {
+      const sr = vmParameters[0].sr
+      const arbiterConfig = {
+        sr: sr,
+        host: vmParameters[0].host,
+        name_label: vmParameters[0].name_label + ' arbiter',
+        name_description: 'Xosan VM storing data on volume ' + sr.name_label,
+        xenstore_data: {
+          'vm-data/hostname': 'XOSAN' + sr.name_label + '_arb',
+          'vm-data/sshkey': sshKey.public,
+          'vm-data/ip': NETWORK_PREFIX + (vmIpLastNumber++),
+          'vm-data/mtu': String(xosanNetwork.MTU),
+          'vm-data/vlan': String(vlan)
+        }
+      }
+      const arbiterVm = await copyVm(xapi, firstVM, arbiterConfig)
+      arbiter = await prepareGlusterVm(xapi, arbiterVm, xosanNetwork, false);
+    }
     const ipAndHosts = await Promise.all(map(vmsAndParams, vmAndParam => prepareGlusterVm(xapi, vmAndParam, xosanNetwork)))
     const firstIpAndHost = ipAndHosts[0]
-    for (let i = 1; i < ipAndHosts.length; i++) {
-      await remoteSsh(xapi, firstIpAndHost, 'gluster peer probe ' + ipAndHosts[i].address)
-    }
-    const configByType = {
-      replica: {
-        creation: 'replica ' + redundancy + ' ',
-        extra: ['gluster volume set xosan cluster.data-self-heal on']
-      },
-      disperse: {
-        creation: 'disperse ' + ipAndHosts.length + ' redundancy ' + redundancy + ' ',
-        extra: []
-      }
-    }
-
-    const volumeCreation = 'gluster volume create xosan ' + configByType[glusterType].creation +
-      ' ' + ipAndHosts.map(ipAndHosts => (ipAndHosts.address + ':/bricks/xosan/xosandir')).join(' ')
-    console.log('creating volume: ', volumeCreation)
-    await remoteSsh(xapi, firstIpAndHost, volumeCreation)
-    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan network.remote-dio enable')
-    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan cluster.eager-lock enable')
-    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.io-cache off')
-    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.read-ahead off')
-    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.quick-read off')
-    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.strict-write-ordering off')
-    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan client.event-threads 8')
-    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan server.event-threads 8')
-    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.io-thread-count 64')
-    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan performance.stat-prefetch on')
-    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan features.shard on')
-    await remoteSsh(xapi, firstIpAndHost, 'gluster volume set xosan features.shard-block-size 512MB')
-    for (let confChunk of configByType[glusterType].extra) {
-      await remoteSsh(xapi, firstIpAndHost, confChunk)
-    }
-    await remoteSsh(xapi, firstIpAndHost, 'gluster volume start xosan')
-
+    await configureGluster(redundancy, ipAndHosts, xapi, firstIpAndHost, glusterType, arbiter)
     console.log('xosan gluster volume started')
     const config = { server: firstIpAndHost.address + ':/xosan' }
     const xosanSr = await xapi.call('SR.create', srsObjects[0].$PBDs[0].$host.$ref, config, 0, 'XOSAN', 'XOSAN', 'xosan', '', true, {})
+    if (arbiter) {
+      ipAndHosts.push(arbiter)
+    }
     await xapi.xo.setData(xosanSr, 'xosan_config', {
       nodes: ipAndHosts.map(param => ({
         host: param.host.$id,
@@ -327,7 +366,7 @@ createSR.resolve = {
 }
 
 const POSSIBLE_CONFIGURATIONS = []
-POSSIBLE_CONFIGURATIONS[2] = [{ layout: 'replica', redundancy: 2, capacity: 1 }]
+POSSIBLE_CONFIGURATIONS[2] = [{ layout: 'replica', redundancy: 3, capacity: 1 }]
 POSSIBLE_CONFIGURATIONS[3] = [
   { layout: 'disperse', redundancy: 1, capacity: 2 },
   { layout: 'replica', redundancy: 3, capacity: 1 }]
