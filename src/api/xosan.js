@@ -442,7 +442,6 @@ export async function computeXosanPossibleOptions ({ lvmSrs }) {
   }
   if (count > 0) {
     let xapi = this.getXapi(lvmSrs[0])
-    console.log('xapi.pool', xapi.pool.$id)
     let srs = map(lvmSrs, srId => xapi.getObject(srId))
     let srSizes = map(srs, sr => sr.physical_size - sr.physical_utilisation)
     let minSize = Math.min.apply(null, srSizes)
