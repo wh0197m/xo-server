@@ -15,6 +15,8 @@ const NETWORK_PREFIX = '172.31.100.'
 const XOSAN_VM_SYSTEM_DISK_SIZE = 10 * 1024 * 1024 * 1024
 const XOSAN_DATA_DISK_USEAGE_RATIO = 0.99
 
+const CURRENTLY_CREATING_SRS = {}
+
 async function runCmd (command, argArray) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, argArray)
@@ -269,91 +271,100 @@ export const createSR = defer.onFailure(async function ($onFailure, { template, 
 
   let vmIpLastNumber = 101
   let xapi = this.getXapi(srs[0])
-  let xosanNetwork = await createNetworkAndInsertHosts(xapi, pif, vlan)
-
-  $onFailure(async () => await xapi.deleteNetwork(xosanNetwork)::pCatch(noop))
-  let sshKey = await getOrCreateSshKey(xapi)
-  const srsObjects = map(srs, srId => xapi.getObject(srId))
-
-  const vmParameters = map(srs, srId => {
-    const sr = xapi.getObject(srId)
-    const host = xapi.getObject(xapi.getObject(sr.$PBDs[0]).host)
-    return {
-      sr,
-      host,
-      name_label: 'XOSAN - ' + sr.name_label + ' - ' + host.name_label,
-      name_description: 'Xosan VM storing data on volume ' + sr.name_label,
-      // the values of the xenstore_data object *have* to be string, don't forget.
-      xenstore_data: {
-        'vm-data/hostname': 'XOSAN' + sr.name_label,
-        'vm-data/sshkey': sshKey.public,
-        'vm-data/ip': NETWORK_PREFIX + (vmIpLastNumber++),
-        'vm-data/mtu': String(xosanNetwork.MTU),
-        'vm-data/vlan': String(vlan)
-      }
-    }
-  })
-  await Promise.all(vmParameters.map(vmParam => callPlugin(xapi, vmParam.host, 'receive_ssh_keys', {
-    private_key: sshKey.private,
-    public_key: sshKey.public,
-    force: 'true'
-  })))
-
-  const request = await this.requestResource('xosan', template.id, template.version)
-  const response = await new Promise((resolve, reject) => {
-    request.on('response', response => resolve(response))
-    request.on('aborted', () => reject())
-  })
-  const firstVM = await xapi.importVm(response, { srId: vmParameters[0].sr.$ref, type: 'xva' })
-  $onFailure(async () => await xapi.deleteVm(firstVM, true)::pCatch(noop))
-  await xapi.editVm(firstVM, {
-    autoPoweron: true
-  })
-  const copiedVms = await Promise.all(vmParameters.slice(1).map(param => copyVm(xapi, firstVM, param)))
-  // TODO: Promise.all() is certainly not the right operation to execute all the given promises wether they fulfill or reject.
-  $onFailure(async () => await Promise.all(copiedVms.map(vm => xapi.deleteVm(vm.vm, true)))::pCatch(noop))
-  const vmsAndParams = [{
-    vm: firstVM,
-    params: vmParameters[0]
-  }].concat(copiedVms)
-  let arbiter = null;
-  if (srs.length == 2) {
-    const sr = vmParameters[0].sr
-    const arbiterConfig = {
-      sr: sr,
-      host: vmParameters[0].host,
-      name_label: vmParameters[0].name_label + ' arbiter',
-      name_description: 'Xosan VM storing data on volume ' + sr.name_label,
-      xenstore_data: {
-        'vm-data/hostname': 'XOSAN' + sr.name_label + '_arb',
-        'vm-data/sshkey': sshKey.public,
-        'vm-data/ip': NETWORK_PREFIX + (vmIpLastNumber++),
-        'vm-data/mtu': String(xosanNetwork.MTU),
-        'vm-data/vlan': String(vlan)
-      }
-    }
-    const arbiterVm = await copyVm(xapi, firstVM, arbiterConfig)
-    $onFailure(async () => await xapi.deleteVm(arbiterVm, true)::pCatch(noop))
-    arbiter = await prepareGlusterVm(xapi, arbiterVm, xosanNetwork, false);
+  if (CURRENTLY_CREATING_SRS[xapi.pool.$id]) {
+    throw new Error('createSR is already running for this pool')
+  } else {
+    CURRENTLY_CREATING_SRS[xapi.pool.$id] = true
   }
-  const ipAndHosts = await Promise.all(map(vmsAndParams, vmAndParam => prepareGlusterVm(xapi, vmAndParam, xosanNetwork)))
-  const firstIpAndHost = ipAndHosts[0]
-  await configureGluster(redundancy, ipAndHosts, xapi, firstIpAndHost, glusterType, arbiter)
-  console.log('xosan gluster volume started')
-  const config = { server: firstIpAndHost.address + ':/xosan' }
-  const xosanSr = await xapi.call('SR.create', srsObjects[0].$PBDs[0].$host.$ref, config, 0, 'XOSAN', 'XOSAN', 'xosan', '', true, {})
-  if (arbiter) {
-    ipAndHosts.push(arbiter)
+  try {
+    let xosanNetwork = await createNetworkAndInsertHosts(xapi, pif, vlan)
+    $onFailure(async () => await xapi.deleteNetwork(xosanNetwork)::pCatch(noop))
+    let sshKey = await getOrCreateSshKey(xapi)
+    const srsObjects = map(srs, srId => xapi.getObject(srId))
+
+    const vmParameters = map(srs, srId => {
+      const sr = xapi.getObject(srId)
+      const host = xapi.getObject(xapi.getObject(sr.$PBDs[0]).host)
+      return {
+        sr,
+        host,
+        name_label: 'XOSAN - ' + sr.name_label + ' - ' + host.name_label,
+        name_description: 'Xosan VM storing data on volume ' + sr.name_label,
+        // the values of the xenstore_data object *have* to be string, don't forget.
+        xenstore_data: {
+          'vm-data/hostname': 'XOSAN' + sr.name_label,
+          'vm-data/sshkey': sshKey.public,
+          'vm-data/ip': NETWORK_PREFIX + (vmIpLastNumber++),
+          'vm-data/mtu': String(xosanNetwork.MTU),
+          'vm-data/vlan': String(vlan)
+        }
+      }
+    })
+    await Promise.all(vmParameters.map(vmParam => callPlugin(xapi, vmParam.host, 'receive_ssh_keys', {
+      private_key: sshKey.private,
+      public_key: sshKey.public,
+      force: 'true'
+    })))
+
+    const request = await this.requestResource('xosan', template.id, template.version)
+    const response = await new Promise((resolve, reject) => {
+      request.on('response', response => resolve(response))
+      request.on('aborted', () => reject())
+    })
+    const firstVM = await xapi.importVm(response, { srId: vmParameters[0].sr.$ref, type: 'xva' })
+    $onFailure(async () => await xapi.deleteVm(firstVM, true)::pCatch(noop))
+    await xapi.editVm(firstVM, {
+      autoPoweron: true
+    })
+    const copiedVms = await Promise.all(vmParameters.slice(1).map(param => copyVm(xapi, firstVM, param)))
+    // TODO: Promise.all() is certainly not the right operation to execute all the given promises wether they fulfill or reject.
+    $onFailure(async () => await Promise.all(copiedVms.map(vm => xapi.deleteVm(vm.vm, true)))::pCatch(noop))
+    const vmsAndParams = [{
+      vm: firstVM,
+      params: vmParameters[0]
+    }].concat(copiedVms)
+    let arbiter = null;
+    if (srs.length == 2) {
+      const sr = vmParameters[0].sr
+      const arbiterConfig = {
+        sr: sr,
+        host: vmParameters[0].host,
+        name_label: vmParameters[0].name_label + ' arbiter',
+        name_description: 'Xosan VM storing data on volume ' + sr.name_label,
+        xenstore_data: {
+          'vm-data/hostname': 'XOSAN' + sr.name_label + '_arb',
+          'vm-data/sshkey': sshKey.public,
+          'vm-data/ip': NETWORK_PREFIX + (vmIpLastNumber++),
+          'vm-data/mtu': String(xosanNetwork.MTU),
+          'vm-data/vlan': String(vlan)
+        }
+      }
+      const arbiterVm = await copyVm(xapi, firstVM, arbiterConfig)
+      $onFailure(async () => await xapi.deleteVm(arbiterVm, true)::pCatch(noop))
+      arbiter = await prepareGlusterVm(xapi, arbiterVm, xosanNetwork, false);
+    }
+    const ipAndHosts = await Promise.all(map(vmsAndParams, vmAndParam => prepareGlusterVm(xapi, vmAndParam, xosanNetwork)))
+    const firstIpAndHost = ipAndHosts[0]
+    await configureGluster(redundancy, ipAndHosts, xapi, firstIpAndHost, glusterType, arbiter)
+    console.log('xosan gluster volume started')
+    const config = { server: firstIpAndHost.address + ':/xosan' }
+    const xosanSr = await xapi.call('SR.create', srsObjects[0].$PBDs[0].$host.$ref, config, 0, 'XOSAN', 'XOSAN', 'xosan', '', true, {})
+    if (arbiter) {
+      ipAndHosts.push(arbiter)
+    }
+    // we just forget because the cleanup actions will be executed before.
+    $onFailure(async () => await xapi.forgetSr(xosanSr)::pCatch(noop))
+    await xapi.xo.setData(xosanSr, 'xosan_config', {
+      nodes: ipAndHosts.map(param => ({
+        host: param.host.$id,
+        vm: { id: param.vm.$id, ip: param.address }
+      })),
+      network: xosanNetwork.$id
+    })
   }
-  // we just forget because the cleanup actions will be executed before.
-  $onFailure(async () => await xapi.forgetSr(xosanSr)::pCatch(noop))
-  await xapi.xo.setData(xosanSr, 'xosan_config', {
-    nodes: ipAndHosts.map(param => ({
-      host: param.host.$id,
-      vm: { id: param.vm.$id, ip: param.address }
-    })),
-    network: xosanNetwork.$id
-  })
+  finally {
+    delete CURRENTLY_CREATING_SRS[xapi.pool.$id]
+  }
 })
 
 createSR.description = 'create gluster VM'
@@ -383,6 +394,13 @@ createSR.resolve = {
   srs: ['sr', 'SR', 'administrate'],
   pif: ['pif', 'PIF', 'administrate']
 }
+
+export function checkSrIsBusy ({ poolId }) {
+  return !!CURRENTLY_CREATING_SRS[poolId]
+}
+checkSrIsBusy.description = 'checks if there is a xosan SR curently being created on the given pool id'
+checkSrIsBusy.permission = 'admin'
+checkSrIsBusy.params = { poolId: { type: 'string' } }
 
 const POSSIBLE_CONFIGURATIONS = []
 POSSIBLE_CONFIGURATIONS[2] = [{ layout: 'replica_arbiter', redundancy: 3, capacity: 1 }]
@@ -424,6 +442,7 @@ export async function computeXosanPossibleOptions ({ lvmSrs }) {
   }
   if (count > 0) {
     let xapi = this.getXapi(lvmSrs[0])
+    console.log('xapi.pool', xapi.pool.$id)
     let srs = map(lvmSrs, srId => xapi.getObject(srId))
     let srSizes = map(srs, sr => sr.physical_size - sr.physical_utilisation)
     let minSize = Math.min.apply(null, srSizes)
@@ -449,7 +468,6 @@ export async function downloadAndInstallXosanPack ({ namespace, id, version, poo
   }
 
   const req = await this.requestResource(namespace, id, version)
-  console.log('pool.id', pool.id)
   const xapi = this.getXapi(pool.id)
   req.on('response', res => {
     res.length = res.headers['content-length']
