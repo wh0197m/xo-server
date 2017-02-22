@@ -1,8 +1,13 @@
+import defer from 'golike-defer'
 import fromPairs from 'lodash/fromPairs'
 import fs from 'fs-promise'
 import map from 'lodash/map'
 import arp from 'arp-a'
 import { spawn } from 'child_process'
+import  {
+  noop,
+  pCatch
+} from '../utils'
 
 const SSH_KEY_FILE = 'id_rsa_xosan'
 const NETWORK_PREFIX = '172.31.100.'
@@ -179,7 +184,7 @@ async function setPifIp (xapi, pif, address) {
   await xapi.call('PIF.reconfigure_ip', pif.$ref, 'Static', address, '255.255.255.0', NETWORK_PREFIX + '1', '')
 }
 
-async function createNetworkAndInsertHosts (xapi, pif, vlan) {
+const createNetworkAndInsertHosts = defer.onFailure(async function ($onFailure, xapi, pif, vlan) {
   let hostIpLastNumber = 1
   let xosanNetwork = await xapi.createNetwork({
     name: 'XOSAN network',
@@ -188,9 +193,11 @@ async function createNetworkAndInsertHosts (xapi, pif, vlan) {
     mtu: 9000,
     vlan: +vlan
   })
+  $onFailure(async () => await xapi.deleteNetwork(xosanNetwork)::pCatch(noop))
   await Promise.all(xosanNetwork.$PIFs.map(pif => setPifIp(xapi, pif, NETWORK_PREFIX + (hostIpLastNumber++))))
+
   return xosanNetwork
-}
+})
 async function getOrCreateSshKey (xapi) {
   let sshKey = xapi.xo.getData(xapi.pool, 'xosan_ssh_key')
   if (!sshKey) {
@@ -251,7 +258,7 @@ async function configureGluster (redundancy, ipAndHosts, xapi, firstIpAndHost, g
   await remoteSsh(xapi, firstIpAndHost, 'gluster volume start xosan')
 }
 
-export async function createSR ({ template, pif, vlan, srs, glusterType, redundancy }) {
+export const createSR = defer.onFailure(async function ($onFailure, { template, pif, vlan, srs, glusterType, redundancy }) {
   if (!this.requestResource) {
     throw new Error('requestResource is not a function')
   }
@@ -263,6 +270,8 @@ export async function createSR ({ template, pif, vlan, srs, glusterType, redunda
   let vmIpLastNumber = 101
   let xapi = this.getXapi(srs[0])
   let xosanNetwork = await createNetworkAndInsertHosts(xapi, pif, vlan)
+
+  $onFailure(async () => await xapi.deleteNetwork(xosanNetwork)::pCatch(noop))
   let sshKey = await getOrCreateSshKey(xapi)
   const srsObjects = map(srs, srId => xapi.getObject(srId))
 
@@ -335,7 +344,7 @@ export async function createSR ({ template, pif, vlan, srs, glusterType, redunda
       network: xosanNetwork.$id
     })
   })
-}
+})
 
 createSR.description = 'create gluster VM'
 createSR.permission = 'admin'
