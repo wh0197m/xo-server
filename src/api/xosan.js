@@ -366,7 +366,7 @@ createSR.resolve = {
 }
 
 const POSSIBLE_CONFIGURATIONS = []
-POSSIBLE_CONFIGURATIONS[2] = [{ layout: 'replica', redundancy: 3, capacity: 1 }]
+POSSIBLE_CONFIGURATIONS[2] = [{ layout: 'replica_arbiter', redundancy: 3, capacity: 1 }]
 POSSIBLE_CONFIGURATIONS[3] = [
   { layout: 'disperse', redundancy: 1, capacity: 2 },
   { layout: 'replica', redundancy: 3, capacity: 1 }]
