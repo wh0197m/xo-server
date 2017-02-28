@@ -13,6 +13,8 @@ import {
   includes
 } from 'lodash'
 
+import { delay } from 'promise-toolbox'
+
 import {
   noop,
   pCatch,
@@ -140,6 +142,9 @@ async function prepareGlusterVm (xapi, vmAndParam, xosanNetwork, increaseDataDis
     name_description: params.name_description
   })
   await xapi.call('VM.set_xenstore_data', vm.$ref, params.xenstore_data)
+  console.log('waiting...')
+  await delay(5000)
+  console.log('wait over...')
   if (increaseDataDisk) {
     const dataDisk = vm.$VBDs.map(vbd => vbd.$VDI).find(vdi => vdi && vdi.name_label === 'xosan_data')
     const srFreeSpace = sr.physical_size - sr.physical_utilisation
