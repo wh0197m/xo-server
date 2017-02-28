@@ -123,6 +123,7 @@ async function copyVm (xapi, originalVm, params) {
 }
 
 async function prepareGlusterVm (xapi, vmAndParam, xosanNetwork, increaseDataDisk = true) {
+  console.log('prepareGlusterVm  params.xenstore_data', vmAndParam.params.xenstore_data)
   let vm = vmAndParam.vm
   // refresh the object so that sizes are correct
   const params = vmAndParam.params
@@ -335,7 +336,10 @@ export const createSR = defer.onFailure(async function ($onFailure, { template, 
       $onFailure(() => xapi.deleteVm(arbiterVm.vm, true)::pCatch(noop))
       arbiter = await prepareGlusterVm(xapi, arbiterVm, xosanNetwork, false)
     }
-    const ipAndHosts = await Promise.all(map(vmsAndParams, vmAndParam => prepareGlusterVm(xapi, vmAndParam, xosanNetwork)))
+    const ipAndHosts = []
+    for (const vmAndParam of vmsAndParams) {
+      ipAndHosts.push(await prepareGlusterVm(xapi, vmAndParam, xosanNetwork))
+    }
     const firstIpAndHost = ipAndHosts[0]
     await configureGluster(redundancy, ipAndHosts, xapi, firstIpAndHost, glusterType, arbiter)
     debug('xosan gluster volume started')
