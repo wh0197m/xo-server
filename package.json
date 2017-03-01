@@ -68,7 +68,7 @@
     "highland": "^2.10.2",
     "http-proxy": "^1.16.2",
     "http-server-plus": "^0.8.0",
-    "human-format": "^0.7.0",
+    "human-format": "^0.8.0",
     "is-my-json-valid": "^2.16.0",
     "is-redirect": "^1.0.0",
     "js-yaml": "^3.8.1",
