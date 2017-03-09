@@ -64,7 +64,7 @@
     "fs-promise": "^2.0.0",
     "golike-defer": "^0.0.0",
     "hashy": "~0.6.0",
-    "helmet": "^3.4.1",
+    "helmet": "^3.5.0",
     "highland": "^2.10.2",
     "http-proxy": "^1.16.2",
     "http-server-plus": "^0.8.0",
